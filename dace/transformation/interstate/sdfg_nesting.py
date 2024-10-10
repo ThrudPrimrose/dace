@@ -2,13 +2,10 @@
 """ SDFG nesting transformation. """
 
 import ast
-from collections import defaultdict
 from copy import deepcopy as dc
-from dace.frontend.python.ndloop import ndrange
 import itertools
 import networkx as nx
 from typing import Callable, Dict, Iterable, List, Set, Tuple, Union
-import warnings
 from functools import reduce
 import operator
 import copy
@@ -25,6 +22,7 @@ from dace import data
 
 
 @make_properties
+@transformation.single_level_sdfg_only
 class InlineSDFG(transformation.SingleStateTransformation):
     """
     Inlines a single-state nested SDFG into a top-level SDFG.
@@ -283,9 +281,11 @@ class InlineSDFG(transformation.SingleStateTransformation):
         struct_views : Dict[str, str] = {}
 
         for e in list(state.in_edges(nsdfg_node)):
-            
             # Structure treatment
             outer_dataname = state.memlet_path(e)[-1].data.data
+            if outer_dataname is None:
+                # Empty memlet, no data.
+                continue
             outer_tokens = outer_dataname.split('.')
             outer_dataname = outer_tokens[0]
             outer_descriptor = sdfg.arrays[outer_dataname]
@@ -316,9 +316,11 @@ class InlineSDFG(transformation.SingleStateTransformation):
                     views[d] = (arr, mem)
 
         for e in list(state.out_edges(nsdfg_node)):
-
             # Structure treatment
             outer_dataname = state.memlet_path(e)[0].data.data
+            if outer_dataname is None:
+                # Empty memlet, no data.
+                continue
             outer_tokens = outer_dataname.split('.')
             outer_dataname = outer_tokens[0]
             outer_descriptor = sdfg.arrays[outer_dataname]
@@ -355,7 +357,7 @@ class InlineSDFG(transformation.SingleStateTransformation):
         symbolic.safe_replace(nsdfg_node.symbol_mapping, nsdfg.replace_dict)
 
         # Access nodes that need to be reshaped
-        reshapes: Set(str) = set()
+        reshapes: Set[str] = set()
         for aname, array in nsdfg.arrays.items():
             if array.transient:
                 continue
@@ -614,7 +616,7 @@ class InlineSDFG(transformation.SingleStateTransformation):
             # Fission state if necessary
             cc = utils.weakly_connected_component(state, node)
             if not any(n in cc for n in subgraph.nodes()):
-                helpers.state_fission(state.parent, cc)
+                helpers.state_fission(cc)
         for edge in removed_out_edges:
             # Find last access node that refers to this edge
             try:
@@ -629,7 +631,7 @@ class InlineSDFG(transformation.SingleStateTransformation):
             cc = utils.weakly_connected_component(state, node)
             if not any(n in cc for n in subgraph.nodes()):
                 cc2 = SubgraphView(state, [n for n in state.nodes() if n not in cc])
-                state = helpers.state_fission(sdfg, cc2)
+                state = helpers.state_fission(cc2)
 
         #######################################################
         # Remove nested SDFG node
@@ -819,6 +821,7 @@ class InlineSDFG(transformation.SingleStateTransformation):
 
 
 @make_properties
+@transformation.single_level_sdfg_only
 class InlineTransients(transformation.SingleStateTransformation):
     """
     Inlines all transient arrays that are not used anywhere else into a
@@ -962,6 +965,7 @@ class ASTRefiner(ast.NodeTransformer):
 
 
 @make_properties
+@transformation.single_level_sdfg_only
 class RefineNestedAccess(transformation.SingleStateTransformation):
     """
     Reduces memlet shape when a memlet is connected to a nested SDFG, but not
@@ -1199,6 +1203,7 @@ class RefineNestedAccess(transformation.SingleStateTransformation):
 
 
 @make_properties
+@transformation.single_level_sdfg_only
 class NestSDFG(transformation.MultiStateTransformation):
     """ Implements SDFG Nesting, taking an SDFG as an input and creating a
         nested SDFG node from it. """
