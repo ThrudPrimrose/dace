@@ -27,7 +27,7 @@ from dace.properties import (DebugInfoProperty, DictProperty, EnumProperty, List
 
 def create_datadescriptor(obj, no_custom_desc=False):
     """ Creates a data descriptor from various types of objects.
-        
+
         :see: dace.data.Data
     """
     from dace import dtypes  # Avoiding import loops
@@ -136,27 +136,6 @@ def create_datadescriptor(obj, no_custom_desc=False):
                     'adaptor method to the type hint or object itself.')
 
 
-def find_new_name(name: str, existing_names: Sequence[str]) -> str:
-    """
-    Returns a name that matches the given ``name`` as a prefix, but does not
-    already exist in the given existing name set. The behavior is typically
-    to append an underscore followed by a unique (increasing) number. If the
-    name does not already exist in the set, it is returned as-is.
-
-    :param name: The given name to find.
-    :param existing_names: The set of existing names.
-    :return: A new name that is not in existing_names.
-    """
-    if name not in existing_names:
-        return name
-    cur_offset = 0
-    new_name = name + '_' + str(cur_offset)
-    while new_name in existing_names:
-        cur_offset += 1
-        new_name = name + '_' + str(cur_offset)
-    return new_name
-
-
 def _prod(sequence):
     return functools.reduce(lambda a, b: a * b, sequence, 1)
 
@@ -204,8 +183,9 @@ class Data:
                             default=dtypes.AllocationLifetime.Scope)
     location = DictProperty(key_type=str, value_type=str, desc='Full storage location identifier (e.g., rank, GPU ID)')
     debuginfo = DebugInfoProperty(allow_none=True)
+    host_data = Property(dtype=bool, default=False, desc="Host data (set to True) can't be offloaded to GPU")
 
-    def __init__(self, dtype, shape, transient, storage, location, lifetime, debuginfo):
+    def __init__(self, dtype, shape, transient, storage, location, lifetime, debuginfo, host_data):
         self.dtype = dtype
         self.shape = shape
         self.transient = transient
@@ -213,6 +193,7 @@ class Data:
         self.location = location if location is not None else {}
         self.lifetime = lifetime
         self.debuginfo = debuginfo
+        self.host_data = host_data
         self._validate()
 
     def __call__(self):
@@ -404,7 +385,8 @@ class Structure(Data):
                  storage: dtypes.StorageType = dtypes.StorageType.Default,
                  location: Dict[str, str] = None,
                  lifetime: dtypes.AllocationLifetime = dtypes.AllocationLifetime.Scope,
-                 debuginfo: dtypes.DebugInfo = None):
+                 debuginfo: dtypes.DebugInfo = None,
+                 host_data: bool = False):
 
         self.members = OrderedDict(members)
         for k, v in self.members.items():
@@ -443,9 +425,9 @@ class Structure(Data):
 
         dtype = dtypes.pointer(dtypes.struct(name, fields_and_types))
         shape = (1, )
-        super(Structure, self).__init__(dtype, shape, transient, storage, location, lifetime, debuginfo)
+        super(Structure, self).__init__(dtype, shape, transient, storage, location, lifetime, debuginfo, host_data)
 
-    
+
     def used_symbols(self, all_symbols: bool) -> Set[symbolic.SymbolicType]:
         """
         Returns a set of symbols that are used by this data descriptor.
@@ -456,10 +438,10 @@ class Structure(Data):
                  rather than a set of strings.
         """
         result = set()
-        
+
         for member_name,member in self.members.items():
             result |= member.used_symbols(all_symbols)
-        
+
         #result=set(filter(lambda x: not str(x).startswith("__f2dace_ARRAY"),result))
         return result
 
@@ -588,7 +570,7 @@ class TensorIndex(ABC):
     def iteration_type(self) -> TensorIterationTypes:
         """
         Iteration capability supported by this index.
-        
+
         See TensorIterationTypes for reference.
         """
         pass
@@ -606,7 +588,7 @@ class TensorIndex(ABC):
     def assembly(self) -> TensorAssemblyType:
         """
         What assembly type is supported by the index.
-        
+
         See TensorAssemblyType for reference.
         """
         pass
@@ -616,7 +598,7 @@ class TensorIndex(ABC):
     def full(self) -> bool:
         """
         True if the level is full, False otw.
-         
+
         A level is considered full if it encompasses all valid coordinates along
         the corresponding tensor dimension.
         """
@@ -627,7 +609,7 @@ class TensorIndex(ABC):
     def ordered(self) -> bool:
         """
         True if the level is ordered, False otw.
-        
+
         A level is ordered when all coordinates that share the same ancestor are
         ordered by increasing value (e.g. in typical CSR).
         """
@@ -638,7 +620,7 @@ class TensorIndex(ABC):
     def unique(self) -> bool:
         """
         True if coordinate in the level are unique, False otw.
-        
+
         A level is considered unique if no collection of coordinates that share
         the same ancestor contains duplicates. In CSR this is True, in COO it is
         not.
@@ -650,7 +632,7 @@ class TensorIndex(ABC):
     def branchless(self) -> bool:
         """
         True if the level doesn't branch, false otw.
-        
+
         A level is considered branchless if no coordinate has a sibling (another
         coordinate with same ancestor) and all coordinates in parent level have
         a child. In other words if there is a bijection between the coordinates
@@ -664,7 +646,7 @@ class TensorIndex(ABC):
     def compact(self) -> bool:
         """
         True if the level is compact, false otw.
-        
+
         A level is compact if no two coordinates are separated by an unlabled
         node that does not encode a coordinate. An example of a compact level
         can be found in CSR, while the DIA formats range and offset levels are
@@ -677,7 +659,7 @@ class TensorIndex(ABC):
     def fields(self, lvl: int, dummy_symbol: symbolic.SymExpr) -> Dict[str, Data]:
         """
         Generates the fields needed for the index.
-        
+
         :return: a Dict of fields that need to be present in the struct
         """
         pass
@@ -715,7 +697,7 @@ class TensorIndex(ABC):
 class TensorIndexDense(TensorIndex):
     """
     Dense tensor index.
-    
+
     Levels of this type encode the the coordinate in the interval [0, N), where
     N is the size of the corresponding dimension. This level doesn't need any
     index structure beyond the corresponding dimension size.
@@ -782,9 +764,9 @@ class TensorIndexDense(TensorIndex):
 class TensorIndexCompressed(TensorIndex):
     """
     Tensor level that stores coordinates in segmented array.
-    
+
     Levels of this type are compressed using a segented array. The pos array
-    holds the start and end positions of the segment in the crd (coordinate) 
+    holds the start and end positions of the segment in the crd (coordinate)
     array that holds the child coordinates corresponding the parent.
     """
 
@@ -856,7 +838,7 @@ class TensorIndexCompressed(TensorIndex):
 class TensorIndexSingleton(TensorIndex):
     """
     Tensor index that encodes a single coordinate per parent coordinate.
-    
+
     Levels of this type hold exactly one coordinate for every coordinate in the
     parent level. An example can be seen in the COO format, where every
     coordinate but the first is encoded in this manner.
@@ -929,7 +911,7 @@ class TensorIndexSingleton(TensorIndex):
 class TensorIndexRange(TensorIndex):
     """
     Tensor index that encodes a interval of coordinates for every parent.
-    
+
     The interval is computed from an offset for each parent together with the
     tensor dimension size of this level (M) and the parent level (N) parents
     corresponding tensor. Given the parent coordinate i, the level encodes the
@@ -999,7 +981,7 @@ class TensorIndexRange(TensorIndex):
 class TensorIndexOffset(TensorIndex):
     """
     Tensor index that encodes the next coordinates as offset from parent.
-    
+
     Given a parent coordinate i and an offset index k, the level encodes the
     coordinate j = i + offset[k].
     """
@@ -1067,7 +1049,7 @@ class TensorIndexOffset(TensorIndex):
 class Tensor(Structure):
     """
     Abstraction for Tensor storage format.
-    
+
     This abstraction is based on [https://doi.org/10.1145/3276493].
     """
 
@@ -1087,14 +1069,15 @@ class Tensor(Structure):
                  storage: dtypes.StorageType = dtypes.StorageType.Default,
                  location: Dict[str, str] = None,
                  lifetime: dtypes.AllocationLifetime = dtypes.AllocationLifetime.Scope,
-                 debuginfo: dtypes.DebugInfo = None):
+                 debuginfo: dtypes.DebugInfo = None,
+                 host_data: bool = False):
         """
         Constructor for Tensor storage format.
 
         Below are examples of common matrix storage formats:
 
         .. code-block:: python
-            
+
             M, N, nnz = (dace.symbol(s) for s in ('M', 'N', 'nnz'))
 
             csr = dace.data.Tensor(
@@ -1170,7 +1153,7 @@ class Tensor(Structure):
 
         :param value_type: data type of the explicitly stored values.
         :param tensor_shape: logical shape of tensor (#rows, #cols, etc...)
-        :param indices: 
+        :param indices:
             a list of tuples, each tuple represents a level in the tensor
             storage hirachy, specifying the levels tensor index type, and the
             corresponding dimension this level encodes (as index of the
@@ -1211,7 +1194,7 @@ class Tensor(Structure):
         for (lvl, index) in enumerate(indices):
             fields.update(index.fields(lvl, value_count))
 
-        super(Tensor, self).__init__(fields, name, transient, storage, location, lifetime, debuginfo)
+        super(Tensor, self).__init__(fields, name, transient, storage, location, lifetime, debuginfo, host_data)
 
     def __repr__(self):
         return f"{self.name} (dtype: {self.value_dtype}, shape: {list(self.tensor_shape)}, indices: {self.indices})"
@@ -1241,10 +1224,11 @@ class Scalar(Data):
                  allow_conflicts=False,
                  location=None,
                  lifetime=dtypes.AllocationLifetime.Scope,
-                 debuginfo=None):
+                 debuginfo=None,
+                 host_data=False):
         self.allow_conflicts = allow_conflicts
         shape = [1]
-        super(Scalar, self).__init__(dtype, shape, transient, storage, location, lifetime, debuginfo)
+        super(Scalar, self).__init__(dtype, shape, transient, storage, location, lifetime, debuginfo, host_data)
 
     @staticmethod
     def from_json(json_obj, context=None):
@@ -1345,12 +1329,12 @@ class Array(Data):
     how it should behave.
 
     The array definition is flexible in terms of data allocation, it allows arbitrary multidimensional, potentially
-    symbolic shapes (e.g., an array with size ``N+1 x M`` will have ``shape=(N+1, M)``), of arbitrary data 
+    symbolic shapes (e.g., an array with size ``N+1 x M`` will have ``shape=(N+1, M)``), of arbitrary data
     typeclasses (``dtype``). The physical data layout of the array is controlled by several properties:
 
        * The ``strides`` property determines the ordering and layout of the dimensions --- it specifies how many
          elements in memory are skipped whenever one element in that dimension is advanced. For example, the contiguous
-         dimension always has a stride of ``1``; a C-style MxN array will have strides ``(N, 1)``, whereas a 
+         dimension always has a stride of ``1``; a C-style MxN array will have strides ``(N, 1)``, whereas a
          FORTRAN-style array of the same size will have ``(1, M)``. Strides can be larger than the shape, which allows
          post-padding of the contents of each dimension.
        * The ``start_offset`` property is a number of elements to pad the beginning of the memory buffer with. This is
@@ -1367,7 +1351,7 @@ class Array(Data):
          to zero.
 
     To summarize with an example, a two-dimensional array with pre- and post-padding looks as follows:
-    
+
     .. code-block:: text
 
         [xxx][          |xx]
@@ -1385,7 +1369,7 @@ class Array(Data):
 
 
     Notice that the last padded row does not appear in strides, but is a consequence of ``total_size`` being larger.
-    
+
 
     Apart from memory layout, other properties of ``Array`` help the data-centric transformation infrastructure make
     decisions about the array. ``allow_conflicts`` states that warnings should not be printed if potential conflicted
@@ -1441,9 +1425,10 @@ class Array(Data):
                  total_size=None,
                  start_offset=None,
                  optional=None,
-                 pool=False):
+                 pool=False,
+                 host_data=False):
 
-        super(Array, self).__init__(dtype, shape, transient, storage, location, lifetime, debuginfo)
+        super(Array, self).__init__(dtype, shape, transient, storage, location, lifetime, debuginfo, host_data)
 
         self.allow_conflicts = allow_conflicts
         self.may_alias = may_alias
@@ -1595,7 +1580,7 @@ class Array(Data):
 
     def used_symbols(self, all_symbols: bool) -> Set[symbolic.SymbolicType]:
         result = super().used_symbols(all_symbols)
-        
+
         for s in self.strides:
             if isinstance(s, sp.Expr):
                 result |= set(s.free_symbols)
@@ -1668,7 +1653,8 @@ class Stream(Data):
                  location=None,
                  offset=None,
                  lifetime=dtypes.AllocationLifetime.Scope,
-                 debuginfo=None):
+                 debuginfo=None,
+                 host_data=False):
 
         if shape is None:
             shape = (1, )
@@ -1682,7 +1668,7 @@ class Stream(Data):
         else:
             self.offset = [0] * len(shape)
 
-        super(Stream, self).__init__(dtype, shape, transient, storage, location, lifetime, debuginfo)
+        super(Stream, self).__init__(dtype, shape, transient, storage, location, lifetime, debuginfo, host_data)
 
     def to_json(self):
         attrs = serialize.all_properties_to_json(self)
@@ -1835,7 +1821,8 @@ class ContainerArray(Array):
                  total_size=None,
                  start_offset=None,
                  optional=None,
-                 pool=False):
+                 pool=False,
+                 host_data=False):
 
         self.stype = stype
         if stype:
@@ -1847,7 +1834,7 @@ class ContainerArray(Array):
             dtype = dtypes.pointer(dtypes.typeclass(None))  # void*
         super(ContainerArray,
               self).__init__(dtype, shape, transient, allow_conflicts, storage, location, strides, offset, may_alias,
-                             lifetime, alignment, debuginfo, total_size, start_offset, optional, pool)
+                             lifetime, alignment, debuginfo, total_size, start_offset, optional, pool, host_data)
 
     @classmethod
     def from_json(cls, json_obj, context=None):
@@ -1868,7 +1855,7 @@ class ContainerArray(Array):
 
 
 class View:
-    """ 
+    """
     Data descriptor that acts as a static reference (or view) of another data container.
     Can be used to reshape or reinterpret existing data without copying it.
 
@@ -1880,9 +1867,9 @@ class View:
         node, and the other side (out/in) has a different number of edges.
       * If there is one incoming and one outgoing edge, and one leads to a code
         node, the one that leads to an access node is the viewed data.
-      * If both sides lead to access nodes, if one memlet's data points to the 
+      * If both sides lead to access nodes, if one memlet's data points to the
         view it cannot point to the viewed node.
-      * If both memlets' data are the respective access nodes, the access 
+      * If both memlets' data are the respective access nodes, the access
         node at the highest scope is the one that is viewed.
       * If both access nodes reside in the same scope, the input data is viewed.
 
@@ -1951,11 +1938,11 @@ class View:
 
 
 class Reference:
-    """ 
+    """
     Data descriptor that acts as a dynamic reference of another data descriptor. It can be used just like a regular
     data descriptor, except that it could be set to an arbitrary container (or subset thereof) at runtime. To set a
     reference, connect another access node to it and use the "set" connector.
-    
+
     In order to enable data-centric analysis and optimizations, avoid using References as much as possible.
     """
 
@@ -2006,7 +1993,7 @@ class Reference:
 
 @make_properties
 class ArrayView(Array, View):
-    """ 
+    """
     Data descriptor that acts as a static reference (or view) of another array. Can
     be used to reshape or reinterpret existing data without copying it.
 
@@ -2030,7 +2017,7 @@ class ArrayView(Array, View):
 
 @make_properties
 class StructureView(Structure, View):
-    """ 
+    """
     Data descriptor that acts as a view of another structure.
     """
 
@@ -2061,7 +2048,7 @@ class StructureView(Structure, View):
 
 @make_properties
 class ContainerView(ContainerArray, View):
-    """ 
+    """
     Data descriptor that acts as a view of another container array. Can
     be used to access nested container types without a copy.
     """
@@ -2082,10 +2069,11 @@ class ContainerView(ContainerArray, View):
                  total_size=None,
                  start_offset=None,
                  optional=None,
-                 pool=False):
+                 pool=False,
+                 host_data=False):
         shape = [1] if shape is None else shape
         super().__init__(stype, shape, transient, allow_conflicts, storage, location, strides, offset, may_alias,
-                         lifetime, alignment, debuginfo, total_size, start_offset, optional, pool)
+                         lifetime, alignment, debuginfo, total_size, start_offset, optional, pool, host_data)
 
     def validate(self):
         super().validate()
@@ -2103,9 +2091,9 @@ class ContainerView(ContainerArray, View):
 
 @make_properties
 class ArrayReference(Array, Reference):
-    """ 
+    """
     Data descriptor that acts as a dynamic reference of another array. See ``Reference`` for more information.
-    
+
     In order to enable data-centric analysis and optimizations, avoid using References as much as possible.
     """
 
@@ -2125,9 +2113,9 @@ class ArrayReference(Array, Reference):
 
 @make_properties
 class StructureReference(Structure, Reference):
-    """ 
+    """
     Data descriptor that acts as a dynamic reference of another Structure. See ``Reference`` for more information.
-    
+
     In order to enable data-centric analysis and optimizations, avoid using References as much as possible.
     """
 
@@ -2150,10 +2138,10 @@ class StructureReference(Structure, Reference):
 
 @make_properties
 class ContainerArrayReference(ContainerArray, Reference):
-    """ 
+    """
     Data descriptor that acts as a dynamic reference of another data container array. See ``Reference`` for more
     information.
-    
+
     In order to enable data-centric analysis and optimizations, avoid using References as much as possible.
     """
 
