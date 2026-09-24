@@ -1066,3 +1066,36 @@ def test_a_four_level_cascade_of_nested_clamps_collapses_completely():
 
     survivors = run_against_flat_stencil(four_lvl)
     assert len(survivors) == 1, f'all ten spatial loops must collapse; got {survivors}'
+
+
+def test_a_tile_iterator_read_by_a_tasklet_keeps_the_tile_nest():
+
+    @dace.program
+    def tiled(a: dace.float64[8]):
+        for i in range(0, 8, 4):
+            for ii in range(4):
+                a[i + ii] = i
+
+    sdfg = tiled.to_sdfg(simplify=True)
+    assert UntileLoops().apply_pass(sdfg, {}) is None
+    a = np.zeros(8)
+    sdfg(a=a)
+    assert np.array_equal(a, [0, 0, 0, 0, 4, 4, 4, 4])
+
+
+def test_a_2d_tile_whose_column_tile_loop_carries_a_dependence_is_not_reordered():
+
+    @dace.program
+    def tiled(a: dace.float64[9, 9]):
+        for ti in range(0, 8, 4):
+            for tj in range(0, 8, 4):
+                for i in range(ti, ti + 4):
+                    for j in range(tj, tj + 4):
+                        a[i + 1, j] = a[i, j + 1] + a[i + 1, j]
+
+    sdfg = tiled.to_sdfg(simplify=True)
+    assert UntileLoops().apply_pass(sdfg, {}) is None
+    a, ref = np.ones((9, 9)), np.ones((9, 9))
+    tiled.f(ref)
+    sdfg(a=a)
+    assert np.array_equal(a, ref)
