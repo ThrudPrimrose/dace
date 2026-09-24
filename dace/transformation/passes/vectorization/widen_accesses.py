@@ -326,7 +326,8 @@ class WidenAccesses(ppl.Pass):
             if not is_single:
                 continue
             # Resolve promoted index symbols (``off_plus_i = i + off[0]``) as the classifier does.
-            index = resolve_index_expr(beg, inner_sdfg, _defs=sym_defs) if sym_defs else beg
+            index = resolve_index_expr(dace.symbolic.pystr_to_symbolic(str(beg)), inner_sdfg,
+                                       _defs=sym_defs) if sym_defs else beg
             try:
                 beg_syms = dace.symbolic.SymExpr(str(index)).free_symbols
             except Exception:  # noqa: BLE001
