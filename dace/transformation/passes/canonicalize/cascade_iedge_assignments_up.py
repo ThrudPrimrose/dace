@@ -57,13 +57,15 @@ again before the parallelization stage so the ``LoopToMap`` refuse-check
 sees a clean shape.
 """
 import ast
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Optional, Set, Tuple
 
 from dace import SDFG
 from dace.frontend.python import astutils
+from dace.properties import CodeBlock
 from dace.sdfg import nodes
 from dace.sdfg.sdfg import InterstateEdge
-from dace.sdfg.state import ConditionalBlock, ControlFlowBlock, ControlFlowRegion, LoopRegion, SDFGState
+from dace.sdfg.state import (AbstractControlFlowRegion, ConditionalBlock, ControlFlowBlock, ControlFlowRegion,
+                             LoopRegion, SDFGState)
 from dace.transformation import pass_pipeline as ppl, transformation
 
 
@@ -77,18 +79,21 @@ class HoistAnalysisCache:
     over a whole ``_cascade_once`` call and cleared (forcing a lazy rebuild on next use)
     right after every mutation, instead of recomputing the same answer per candidate.
     """
-    __slots__ = ('reads', 'writes', 'preds', 'region_indices')
+    __slots__ = ('reads', 'writes', 'preds', 'region_indices', 'code_syms', 'edge_syms')
 
     def __init__(self) -> None:
         self.reads: Dict[int, Optional[Dict[str, None]]] = {}
         self.writes: Dict[int, Tuple[Dict[str, None], Dict[str, None]]] = {}
         self.preds: Dict[Tuple[int, int], Dict[ControlFlowBlock, None]] = {}
         self.region_indices: Dict[int, Tuple[Dict[str, list], Dict[str, None]]] = {}
+        # Kept across ``clear``: the pass never mutates a CodeBlock, and the stored block pins its id.
+        self.code_syms: Dict[int, Tuple[CodeBlock, Set[str]]] = {}
+        self.edge_syms: Dict[int, Set[str]] = {}
 
     def block_reads(self, block: ControlFlowBlock) -> Optional[Dict[str, None]]:
         block_id = id(block)
         if block_id not in self.reads:
-            self.reads[block_id] = _block_reads_symbols(block)
+            self.reads[block_id] = _block_reads_symbols(block, self)
         return self.reads[block_id]
 
     def block_writes(self, block: ControlFlowBlock) -> Tuple[Dict[str, None], Dict[str, None]]:
@@ -109,7 +114,18 @@ class HoistAnalysisCache:
             self.region_indices[region_id] = build_region_index(region)
         return self.region_indices[region_id]
 
+    def free_symbols_of(self, code: CodeBlock) -> Set[str]:
+        if id(code) not in self.code_syms:
+            self.code_syms[id(code)] = (code, code.get_free_symbols())
+        return self.code_syms[id(code)][1]
+
+    def edge_reads(self, edge: InterstateEdge) -> Set[str]:
+        if id(edge) not in self.edge_syms:
+            self.edge_syms[id(edge)] = edge.read_symbols()
+        return self.edge_syms[id(edge)]
+
     def clear(self) -> None:
+        self.edge_syms.clear()
         self.reads.clear()
         self.writes.clear()
         self.preds.clear()
@@ -232,7 +248,7 @@ def _predecessors_in(parent: ControlFlowRegion, child: ControlFlowBlock) -> Dict
     return out
 
 
-def _block_reads_symbols(block: ControlFlowBlock) -> Optional[Dict[str, None]]:
+def _block_reads_symbols(block: ControlFlowBlock, cache: HoistAnalysisCache) -> Optional[Dict[str, None]]:
     """All symbols read anywhere inside a block (state, region, etc.).
 
     This is a legality predicate, so it fails CLOSED: an unreadable ``free_symbols`` or condition
@@ -249,7 +265,7 @@ def _block_reads_symbols(block: ControlFlowBlock) -> Optional[Dict[str, None]]:
         except Exception:
             return None
         return syms
-    if isinstance(block, ControlFlowRegion):
+    if isinstance(block, AbstractControlFlowRegion):
         for st in block.all_states():
             try:
                 syms.update(dict.fromkeys(str(s) for s in st.free_symbols))
@@ -263,6 +279,10 @@ def _block_reads_symbols(block: ControlFlowBlock) -> Optional[Dict[str, None]]:
                     syms.update(dict.fromkeys(str(s) for s in e.data.condition.get_free_symbols()))
                 except Exception:
                     return None
+        # Loop headers and branch conditions live on the regions, not on any edge.
+        for cfg in block.all_control_flow_regions():
+            for code in cfg.get_meta_codeblocks():
+                syms.update(dict.fromkeys(cache.free_symbols_of(code)))
     return syms
 
 
@@ -275,7 +295,7 @@ def _block_writes(block: ControlFlowBlock) -> Tuple[Dict[str, None], Dict[str, N
     :param block: The state or region to scan.
     :returns: ``(assigned_symbols, written_data)``.
     """
-    if isinstance(block, ControlFlowRegion):
+    if isinstance(block, AbstractControlFlowRegion):
         return _region_writes(block)
     asyms: Dict[str, None] = {}
     wdata: Dict[str, None] = {}
@@ -323,6 +343,8 @@ def _legal_to_hoist_into(parent: ControlFlowRegion, child: ControlFlowRegion, ke
     # and let ``count`` grow unbounded across iterations -> an out-of-bounds compaction.
     if isinstance(child, LoopRegion) and _key_has_other_writer(cache, child, key, rhs):
         return False
+    if any(key in cache.free_symbols_of(code) for code in child.get_meta_codeblocks()):
+        return False  # L3: the loop header reads ``key`` before the first iteration assigns it
     inner_asyms, inner_wdata = cache.block_writes(child)
     inner_asyms = dict(inner_asyms)
     inner_asyms.pop(key, None)  # discount the assignment we're moving
@@ -354,20 +376,20 @@ def _legal_to_hoist_into(parent: ControlFlowRegion, child: ControlFlowRegion, ke
     # invariant value; the new one redundant-but-harmless co-exists, and
     # subsequent cleanup (or another canonicalize iteration) can dedupe.
     for e in parent.edges():
-        if e.dst is child:
-            continue
+        if (e.dst is child or e.dst in preds) and key in cache.edge_reads(e.data):
+            return False  # L3: an edge before ``child`` reads ``key``
         for lhs, e_rhs in e.data.assignments.items():
             if lhs == key:
                 if str(e_rhs) == str(rhs):
                     continue  # same key/rhs already hoisted by a sibling
                 return False
-            if lhs in rhs_syms:
+            if lhs in rhs_syms and e.dst is not child:
                 return False
     return True
 
 
-def _find_destination(edge_region: ControlFlowRegion, key: str, rhs: str, sdfg: SDFG, origin: ControlFlowBlock,
-                      cache: HoistAnalysisCache) -> Optional[ControlFlowRegion]:
+def _find_destination(edge_region: ControlFlowRegion, key: str, rhs: str, sdfg: SDFG, edge: InterstateEdge,
+                      origin: ControlFlowBlock, cache: HoistAnalysisCache) -> Optional[ControlFlowRegion]:
     """Walk up the ``parent_graph`` chain from ``edge_region`` to find the
     outermost ancestor ``D`` where the move is legal under L1-L6. Returns
     ``None`` if the binding all-or-nothing rule is not met or if no move
@@ -380,10 +402,12 @@ def _find_destination(edge_region: ControlFlowRegion, key: str, rhs: str, sdfg: 
     :param cache: Per-round memo of read/write answers, reused across candidates.
     """
     rhs_syms = names_read_by(rhs)
+    if key in cache.edge_reads(edge):
+        return None
     # legality scan (early-exit AND): iteration order does not affect the True/False outcome
     for b in dict.fromkeys([*cache.predecessors(edge_region, origin), origin]):
         reads = cache.block_reads(b)
-        if reads is None or key in reads:
+        if reads is None or key in reads or any(key in cache.edge_reads(e.data) for e in edge_region.in_edges(b)):
             return None
     dest: ControlFlowRegion = edge_region
     walker: ControlFlowRegion = edge_region
@@ -534,7 +558,7 @@ def _cascade_once(sdfg: SDFG) -> int:
                 continue
             # Snapshot keys -- we mutate the dict as we go.
             for key, rhs in list(edge.data.assignments.items()):
-                dest = _find_destination(cfg, key, rhs, sdfg, edge.src, cache)
+                dest = _find_destination(cfg, key, rhs, sdfg, edge.data, edge.src, cache)
                 if dest is None:
                     continue
                 child = _direct_child(dest, cfg)

@@ -791,5 +791,67 @@ def test_hoisting_keeps_the_cfg_list_of_a_fresh_reset(monkeypatch):
     assert_tree_matches_a_reset(sdfg)
 
 
+@dace.program
+def reset_in_loop(A: dace.int64[1], K: dace.int64):
+    m = 0
+    for i in range(N):
+        m = K + 1
+    A[0] = m
+
+
+def test_pre_loop_assignment_survives_a_zero_trip_loop():
+    sdfg = reset_in_loop.to_sdfg(simplify=True)
+    assert _apply(sdfg) == 0
+    a = np.ones(1, dtype=np.int64)
+    sdfg(A=a, K=10, N=0)
+    assert a[0] == 0
+
+
+def _loop_writing_j_then_assigning_m(name: str, cond: str) -> Tuple[dace.SDFG, LoopRegion, dace.SDFGState]:
+    sdfg = dace.SDFG(name)
+    sdfg.add_array('A', [4], dace.int64)
+    for sym in ('K', 'm', 'j'):
+        sdfg.add_symbol(sym, dace.int64)
+    loop = LoopRegion(f'{name}_loop', cond, 'i', 'i = 0', 'i = i + 1')
+    sdfg.add_node(loop, is_start_block=True)
+    first = loop.add_state('first', is_start_block=True)
+    first.add_edge(first.add_tasklet('w', {}, {'o'}, 'o = j'), 'o', first.add_write('A'), None, dace.Memlet('A[i]'))
+    loop.add_edge(first, loop.add_state('last'), InterstateEdge(assignments={'m': 'K + 1'}))
+    return sdfg, loop, first
+
+
+def test_read_in_a_branch_condition_before_the_assignment_blocks_the_hoist():
+    sdfg, loop, first = _loop_writing_j_then_assigning_m('cascade_cond_read', 'i < 4')
+    sdfg.add_array('B', [4], dace.int64)
+    then = ControlFlowRegion('then')
+    st = then.add_state('t', is_start_block=True)
+    st.add_edge(st.add_tasklet('w', {}, {'o'}, 'o = 1'), 'o', st.add_write('B'), None, dace.Memlet('B[i]'))
+    cb = ConditionalBlock('cb')
+    cb.add_branch('m > 5', then)
+    loop.add_node(cb, is_start_block=True)
+    loop.add_edge(cb, first, InterstateEdge())
+    assert _apply(sdfg) == 0
+    b = np.zeros(4, dtype=np.int64)
+    sdfg(A=np.zeros(4, dtype=np.int64), B=b, K=10, m=0, j=0)
+    assert np.array_equal(b, [0, 1, 1, 1])
+
+
+def test_read_on_an_interstate_edge_before_the_assignment_blocks_the_hoist():
+    sdfg, loop, first = _loop_writing_j_then_assigning_m('cascade_edge_read', 'i < 4')
+    loop.add_edge(loop.add_state('s0', is_start_block=True), first, InterstateEdge(assignments={'j': 'm + 1'}))
+    assert _apply(sdfg) == 0
+    a = np.zeros(4, dtype=np.int64)
+    sdfg(A=a, K=10, m=0)
+    assert np.array_equal(a, [1, 12, 12, 12])
+
+
+def test_read_in_the_loop_condition_blocks_the_hoist():
+    sdfg, _, _ = _loop_writing_j_then_assigning_m('cascade_header_read', 'i < m')
+    assert _apply(sdfg) == 0
+    a = np.zeros(4, dtype=np.int64)
+    sdfg(A=a, K=2, m=0, j=1)
+    assert not a.any()
+
+
 if __name__ == '__main__':
     pytest.main([__file__, '-v'])
