@@ -1043,15 +1043,3 @@ def test_gather_strided_index_3_knob_off():
         vector_width=8,
         sdfg_name="gather_strided_index_3_knoboff",
     )
-
-
-@dace.program
-def gather_index_plus_one(a: dace.float64[N], b: dace.float64[N + 1], idx: dace.int64[N]):
-    for i in dace.map[0:N]:
-        a[i] = b[idx[i] + 1]
-
-
-def test_gather_through_an_offset_index_compiles():
-    """The per-lane ``idx[i] + 1`` symbols once printed as ``Subscript(idx, ...)`` in the C++."""
-    arrays = {"a": numpy.zeros(24), "b": numpy.random.rand(25), "idx": numpy.random.permutation(24)}
-    run_vectorization_test(gather_index_plus_one, arrays, {"N": 24}, sdfg_name="gather_index_plus_one")

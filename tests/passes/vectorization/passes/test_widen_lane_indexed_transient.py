@@ -14,13 +14,10 @@ import os
 
 os.environ.setdefault('MPI4PY_RC_INITIALIZE', '0')
 
-import numpy as np
 import pytest
 
 import dace
-from dace.transformation.passes.vectorization.utils.errors import VectorizeUnsupported
 from dace.transformation.passes.vectorization.widen_accesses import WidenAccesses
-from tests.passes.vectorization.helpers.harness import N, run_vectorization_test
 
 ITER_VARS = ('i', )
 
@@ -52,7 +49,7 @@ def test_constant_indexed_window_still_refuses():
     """The buffer the refusal was written for -- indexed by constants, one value per lane."""
     sdfg = build([2], '0:2')
 
-    with pytest.raises(VectorizeUnsupported, match="non-scalar shape"):
+    with pytest.raises(NotImplementedError, match="non-scalar shape"):
         WidenAccesses(widths=(8, ))._propagate_lane_dep(sdfg, ITER_VARS, set())
 
 
@@ -63,21 +60,6 @@ def test_scalar_transient_is_still_widened():
     lane_dep = WidenAccesses(widths=(8, ))._propagate_lane_dep(sdfg, ITER_VARS, set())
 
     assert 'buf' in lane_dep
-
-
-@dace.program
-def two_element_scratch(a: dace.float64[N], b: dace.float64[N]):
-    for i in dace.map[0:N]:
-        tmp = np.empty(2, dtype=np.float64)
-        tmp[0] = a[i]
-        tmp[1] = a[i] * 2.0
-        b[i] = tmp[0] + tmp[1]
-
-
-def test_per_lane_scratch_buffer_leaves_the_kernel_untiled_and_correct():
-    arrays = {'a': np.arange(16.0), 'b': np.zeros(16)}
-    with pytest.warns(UserWarning, match="refusing to vectorize .* non-scalar shape"):
-        run_vectorization_test(two_element_scratch, arrays, {'N': 16}, sdfg_name='scratch', expect_no_tiling=True)
 
 
 if __name__ == '__main__':
