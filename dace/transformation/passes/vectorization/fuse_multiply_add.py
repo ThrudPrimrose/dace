@@ -19,6 +19,7 @@ from typing import Any
 
 import dace
 from dace import properties
+from dace.libraries.tileops.nodes.tile_binop import is_floating_dtype
 from dace.sdfg import nodes
 from dace.sdfg.state import SDFGState
 from dace.transformation.passes.vectorization.utils.tasklets import is_vectorizable_tasklet
@@ -116,6 +117,10 @@ class FuseMultiplyAdd(ppl.Pass):
                 continue
             addend_conn = add_ins[0] if add_ins[1] == prod_conn else add_ins[1]
             if addend_conn == prod_conn:
+                continue
+            # ``std::fma`` computes in floating point: fuse only when product, addend and output share one float dtype.
+            dtypes = {sdfg.arrays[e.data.data].dtype for e in state.all_edges(add) if not e.data.is_empty()}
+            if len(dtypes) != 1 or not is_floating_dtype(next(iter(dtypes))):
                 continue
             self._rewrite(sdfg, state, mul, mul_ins, prod, add, add_out_conn, addend_conn)
             fused += 1

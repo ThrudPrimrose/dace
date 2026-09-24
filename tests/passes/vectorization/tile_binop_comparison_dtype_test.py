@@ -10,8 +10,11 @@ import pytest
 
 import dace
 from dace.libraries.tileops import TileBinop
+from dace.transformation.passes.vectorization.config import VectorizeConfig
+from dace.transformation.passes.vectorization.vectorize_cpu_multi_dim import VectorizeCPUMultiDim
 
 WIDTH = 8
+N = dace.symbol("N")
 
 
 def compare_against_zero(name: str, op: str, operand_dtype: dace.typeclass,
@@ -50,3 +53,20 @@ def test_arithmetic_on_a_double_into_an_int8_output_is_still_narrowing():
 
     with pytest.raises(NotImplementedError, match="narrowing"):
         sut.validate(sdfg, state)
+
+
+@dace.program
+def half_ramp(C: dace.float64[N]):
+    for i in dace.map[0:N]:
+        C[i] = i * 0.5
+
+
+def test_the_int64_lane_index_times_a_float_literal_keeps_the_fraction():
+    sdfg = half_ramp.to_sdfg(simplify=True)
+    C = np.zeros(10)
+    VectorizeCPUMultiDim(VectorizeConfig(widths=(WIDTH, ), target_isa="SCALAR")).apply_pass(sdfg, {})
+
+    sdfg(C=C, N=10)
+
+    assert any(isinstance(n, TileBinop) for n, _ in sdfg.all_nodes_recursive())
+    np.testing.assert_array_equal(C, np.arange(10) * 0.5)

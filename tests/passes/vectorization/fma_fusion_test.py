@@ -147,6 +147,18 @@ def test_cpu_fma_off_by_default():
     assert _count(sdfg, TileFMA) == 0
 
 
+def test_integer_multiply_add_is_not_fused_into_a_floating_fma():
+    sdfg = _axpy(dace.int64).to_sdfg(simplify=True)
+    A, B, C = np.full((1, 8), 300_000_001), np.full((1, 8), 300_000_007), np.zeros((1, 8), np.int64)
+    VectorizeCPUMultiDim(VectorizeConfig(widths=(8, ), target_isa="SCALAR",
+                                         fuse_multiply_add=True)).apply_pass(sdfg, {})
+
+    sdfg(A=A, B=B, C=C, M=1, N=8)
+
+    assert _count(sdfg, TileFMA) == 0
+    np.testing.assert_array_equal(C, np.full((1, 8), 90_000_002_700_000_008))
+
+
 @pytest.mark.gpu
 @pytest.mark.skipif(not HAS_NVCC, reason="nvcc not available; PTX check skipped")
 def test_gpu_fma_lowers_to_native_hfma2(tmp_path):
