@@ -243,8 +243,9 @@ class ExpandTileBinopPure(ExpandTransformation):
         off = tile_offset(widths)
         in_e = {e.dst_conn: e for e in parent_state.in_edges(node) if e.dst_conn is not None}
 
-        out_dtype = parent_sdfg.arrays[next(e for e in parent_state.out_edges(node)
-                                            if e.src_conn == "_c").data.data].dtype.ctype
+        out_type = parent_sdfg.arrays[next(e for e in parent_state.out_edges(node)
+                                           if e.src_conn == "_c").data.data].dtype
+        out_dtype = out_type.ctype
 
         # The dtype the VALUE operands share. A ``SYMBOL`` / ``SCALAR``
         # operand is cast to this so a type-strict binop (``std::min`` etc.)
@@ -270,7 +271,9 @@ class ExpandTileBinopPure(ExpandTransformation):
                     pass
             return out_dtype
 
-        operand_dtype = _operand_dtype()
+        # Arithmetic with a floating output computes in that dtype, as Python/numpy promote ``int * 0.5``.
+        promote = node.op not in COMPARISON_OPS and is_floating_dtype(out_type)
+        operand_dtype = out_dtype if promote else _operand_dtype()
         # Never emit a ``(bool)X`` cast: a logical op's operands are already
         # bool tiles, and casting a value to bool truncates it. The cast only
         # exists to resolve type-strict overloads (``std::min(int, double)``),
@@ -327,6 +330,8 @@ class ExpandTileBinopPure(ExpandTransformation):
 
         lhs = _operand_ref(node.kind_a, "_a", node.expr_a, ctype_b)
         rhs = _operand_ref(node.kind_b, "_b", node.expr_b, ctype_a)
+        if promote:
+            lhs, rhs = (r if t == out_dtype else f"({out_dtype})({r})" for r, t in ((lhs, ctype_a), (rhs, ctype_b)))
         rhs_expr = _binop_rhs(node.op, lhs, rhs)
         # Output kind dispatch (design 6.2): when all inputs are non-Tile and the ``_c`` memlet moves
         # one element, emit a single assignment with no lane loop. Otherwise emit the K-fold loop
