@@ -18,7 +18,7 @@ from dace.transformation.passes.vectorization.same_write_set_if_else_to_ite_cfg 
     SameWriteSetIfElseToITECFG, )
 
 
-def _build_ite_tasklet_sdfg(ite_code: str, dtype=dace.int64):
+def _build_ite_tasklet_sdfg(ite_code: str, dtype=dace.int64, cond_dtype=dace.bool_):
     """Build a minimal SDFG whose single state contains a tasklet with the
     given ``ITE`` body. Connectors ``_c``, ``_t``, ``_e`` are wired from
     1-element ``dtype`` arrays; output ``_o`` goes to ``A``. Defaults to
@@ -28,7 +28,7 @@ def _build_ite_tasklet_sdfg(ite_code: str, dtype=dace.int64):
     sdfg.add_array("A", shape=(1, ), dtype=dtype)
     sdfg.add_array("T", shape=(1, ), dtype=dtype)
     sdfg.add_array("E", shape=(1, ), dtype=dtype)
-    sdfg.add_array("C", shape=(1, ), dtype=dace.bool_)
+    sdfg.add_array("C", shape=(1, ), dtype=cond_dtype)
 
     state = sdfg.add_state("only", is_start_block=True)
     rT = state.add_access("T")
@@ -54,7 +54,20 @@ def test_rewrites_simple_ite_tasklet():
         assert op in body
     # And introduce the (1 - c) complement factor, with the bool cond promoted to
     # the arm dtype (uniform-dtype tile binop; see the pass docstring).
-    assert "1 - dace.int64(_c)" in body
+    assert "1 - dace.int64((_c != 0))" in body
+
+
+def test_truthy_int_condition_selects_then_arm_exactly():
+    """A truthy int guard of 3 blends to the ``then`` arm, not ``3 * 10 + (1 - 3) * 20``."""
+    sdfg = _build_ite_tasklet_sdfg("_o = ITE(_c, _t, _e)", cond_dtype=dace.int64)
+    LowerITEToFpFactor().apply_pass(sdfg, {})
+    A = np.zeros((1, ), dtype=np.int64)
+    csdfg = sdfg.compile()
+
+    csdfg(A=A, T=np.array([10], dtype=np.int64), E=np.array([20], dtype=np.int64), C=np.array([3], dtype=np.int64))
+
+    assert "ITE(" not in next(n for n in sdfg.states()[0].nodes() if isinstance(n, dace.nodes.Tasklet)).code.as_string
+    assert A[0] == 10
 
 
 def test_float_ite_is_left_intact_for_select():

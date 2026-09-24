@@ -21,7 +21,7 @@ from dace.transformation import pass_pipeline as ppl
 
 class _ITEToFpFactor(ast.NodeTransformer):
     """Replaces every ``ITE(c, t, e)`` call with ``cf*t + (1 - cf)*e`` where
-    ``cf = <cast_dtype>(c)`` promotes the (typically ``bool``) condition to the
+    ``cf = <cast_dtype>(c != 0)`` promotes the (typically ``bool``) condition to the
     arm dtype, so the ``cf * t`` tile binop is uniform-dtype (the K-dim tile path
     refuses a mixed ``bool * double`` binop). ``SplitTasklets`` later splits ``cf``
     into a standalone cast tasklet that ``ConvertTaskletsToTileOps`` lowers to a
@@ -54,7 +54,8 @@ class _ITEToFpFactor(ast.NodeTransformer):
         if self._cast_dtype is None or not self._cast_dtype.startswith(("int", "uint")):
             return node
         c, t, e = (unparse(arg) for arg in node.args)
-        cf = f"dace.{self._cast_dtype}({c})" if self._cast_dtype is not None else f"({c})"
+        # The blend needs a 0/1 factor; a truthy non-bool condition (int ``3``) is normalized first.
+        cf = f"dace.{self._cast_dtype}(({c}) != 0)"
         replacement = ast.parse(f"{cf} * ({t}) + (1 - {cf}) * ({e})", mode="eval").body
         self.changed = True
         return ast.copy_location(replacement, node)

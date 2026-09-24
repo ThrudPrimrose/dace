@@ -480,6 +480,32 @@ def _symbol_has_external_consumer(sdfg: dace.SDFG,
     return False
 
 
+def definition_may_change_before(sym: str, def_edges: Iterable[Edge[InterstateEdge]], state: dace.SDFGState) -> bool:
+    """Whether data or symbols read by ``sym``'s definition may change between a defining edge and ``state``."""
+    for edge in def_edges:
+        rhs = str(edge.data.assignments[sym])
+        try:
+            reads = set(map(str, symbolic.arrays(rhs))) | set(map(str, symbolic.free_symbols_and_functions(rhs)))
+        except Exception:  # noqa: BLE001 -- unparsable definition: nothing is provable
+            return True
+        graph, target = edge.src.parent_graph, state
+        while target is not None and target.parent_graph is not graph:
+            target = None if isinstance(target, dace.SDFG) else target.parent_graph
+        if target is None or target not in graph.bfs_nodes(edge.dst):
+            return True
+        on_path = [b for b in graph.bfs_nodes(edge.dst) if b is not state and target in graph.bfs_nodes(b)]
+        changed = {lhs for e in graph.edges() if e.src in on_path for lhs in e.data.assignments}
+        for block in on_path:
+            regions = [] if isinstance(block, dace.SDFGState) else list(block.all_control_flow_regions())
+            changed |= {lhs for r in regions for e in r.edges() for lhs in e.data.assignments}
+            changed |= {r.loop_variable for r in regions if isinstance(r, LoopRegion)}
+            for st in [block] if isinstance(block, dace.SDFGState) else block.all_states():
+                changed |= {n.data for n in st.data_nodes() if st.in_degree(n) > 0}
+        if not reads.isdisjoint(changed):
+            return True
+    return False
+
+
 @properties.make_properties
 class SameWriteSetIfElseToITECFG(ppl.Pass):
     """Rewrite same-write-set ``if/else`` blocks into 3-CFG ITE form.
@@ -1361,6 +1387,11 @@ class SameWriteSetIfElseToITECFG(ppl.Pass):
         # committed path below, which is the rule the sibling ``_lift_array_predicate_cond``
         # already follows.
 
+        # The lift re-evaluates each definition in ``state``: keep the symbol if its inputs may change before.
+        cond_edges = [e for e in sdfg.all_interstate_edges(recursive=True) if cond_sym in e.data.assignments]
+        if any(definition_may_change_before(y, es, state) for y, es in [(cond_sym, cond_edges), *inlined_syms.items()]):
+            return None
+
         # A GATHER read in the cond value (``w[idx[i], k]``) is an un-representable nested
         # subscript for a plain memlet. Promote each nested index read ``idx[i]`` to a fresh
         # interstate INTEGER symbol (``_gidx = idx[i]`` on the edge feeding this state), so the
@@ -1510,6 +1541,8 @@ class SameWriteSetIfElseToITECFG(ppl.Pass):
         # fires once the recipe has committed to producing a lift, so a fall-through return
         # leaves the SDFG pristine for the caller's next recipe).
         expanded, inlined_syms = self._inline_interstate_scalar_symbols(sdfg, cond_text, exclude=set())
+        if any(definition_may_change_before(y, es, state) for y, es in inlined_syms.items()):
+            return None
         # A GATHER read in the guard (``w[idx[i], k] > K``) is a NESTED subscript no plain
         # memlet can express; string-rebuilt at the wiring below it degenerates to a bare
         # pointer read (``w > K`` -> "invalid operands 'double*' and 'double'"). Promote each
