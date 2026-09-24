@@ -837,3 +837,25 @@ def test_lifted_guard_symbol_bound_to_a_value_keeps_the_symbol_type():
     assert not any(isinstance(b, ConditionalBlock) for b in sdfg.all_control_flow_blocks())
     assert sdfg.arrays["_cond_m"].dtype == dace.int64
     assert run_for_each_k(sdfg) == [2.0, 2.0, 2.0, 1.0]
+
+
+@dace.program
+def guard_read_then_overwritten(a: dace.float64[1], b: dace.float64[1]):
+    c = a[0] > 0.5
+    a[0] = 0.0
+    if c:
+        b[0] = 1.0
+    else:
+        b[0] = 2.0
+
+
+def test_guard_staged_before_an_overwrite_tests_the_staged_value():
+    """``c`` is staged as ``a_index = a[0]`` on an edge; the merge state must not re-read ``a[0]`` after ``a[0] = 0``."""
+    sdfg = guard_read_then_overwritten.to_sdfg(simplify=True)
+    a, b = np.ones(1), np.zeros(1)
+
+    SameWriteSetIfElseToITECFG().apply_pass(sdfg, {})
+
+    assert {"a_index": "a[0]"} in [e.data.assignments for e in sdfg.all_interstate_edges()]
+    sdfg(a=a, b=b)
+    assert b[0] == 1.0
