@@ -28,6 +28,7 @@ between them, nothing else), and structurally identical up to their iteration
 variable -- so it fires only on the re-rolled tile/remainder shape and its kin,
 never on unrelated adjacent loops.
 """
+import json
 import re
 from typing import List, Optional, Tuple
 
@@ -93,6 +94,25 @@ def _symbolically_equal(a, b) -> bool:
         return False
 
 
+def provably_ordered(lo: symbolic.SymbolicType, hi: symbolic.SymbolicType, region: ControlFlowRegion,
+                     own_vars: list[str]) -> bool:
+    """Whether ``lo <= hi`` wherever ``region`` runs, given its enclosing loops' bounds and nonnegative symbols."""
+    diff = symbolic.simplify(symbolic.equalize_symbol(symbolic.pystr_to_symbolic(hi) - symbolic.pystr_to_symbolic(lo)))
+    # Lower-bound ``diff`` over each enclosing unit-stride iterator it is affine in; stop at the SDFG boundary.
+    while region is not None and not isinstance(region, dace.SDFG):
+        v = {str(s): s for s in diff.free_symbols}.get(region.loop_variable) if isinstance(region, LoopRegion) else None
+        if v is not None:
+            coeff, end = diff.diff(v), loop_analysis.get_loop_end(region)
+            start = loop_analysis.get_init_assignment(region)
+            if (start is None or end is None or not coeff.is_number or v in (diff - coeff * v).free_symbols
+                    or loop_analysis.get_loop_stride(region) != 1):
+                return False
+            diff = symbolic.simplify(diff.subs(v, symbolic.pystr_to_symbolic(start if coeff >= 0 else end)))
+        region = region.parent_graph
+    return (not any(str(s) in own_vars for s in diff.free_symbols)
+            and symbolic.provably_nonnegative(diff, assume_symbols_nonnegative=True))
+
+
 def _normalize(text: str, loop_var: str) -> str:
     """Replace whole-word occurrences of ``loop_var`` in ``text`` with the
     canonical placeholder so two bodies differing only in iterator name match."""
@@ -105,13 +125,25 @@ def _canon_data(name: str, local_scratch: dict) -> str:
     return SCRATCH_PLACEHOLDER if name in local_scratch else name
 
 
-def _node_key(node, loop_var: str, local_scratch: dict) -> Tuple:
+def strip_identity(value: object) -> object:
+    """A node's JSON without the fields two copies of one computation differ in (ids, guids, source lines)."""
+    if isinstance(value, dict):
+        return {k: strip_identity(v) for k, v in value.items() if k not in IDENTITY_JSON_KEYS}
+    return [strip_identity(v) for v in value] if isinstance(value, list) else value
+
+
+IDENTITY_JSON_KEYS = frozenset({'guid', 'debuginfo', 'cfg_list_id', 'id', 'scope_entry', 'scope_exit'})
+
+
+def _node_key(node, state: SDFGState, loop_var: str, local_scratch: dict) -> Tuple:
     """A structural key for a body node, iterator- and scratch-name-independent."""
     if isinstance(node, nodes.AccessNode):
         return ('access', _canon_data(node.data, local_scratch))
     if isinstance(node, nodes.Tasklet):
         return ('tasklet', _normalize(node.code.as_string.strip(), loop_var))
-    return ('other', type(node).__name__)
+    # Any other node (nested SDFG, map, library node) is compared by its whole serialization, not its class.
+    return ('other', type(node).__name__,
+            _normalize(json.dumps(strip_identity(node.to_json(state)), sort_keys=True), loop_var))
 
 
 @explicit_cf_compatible
@@ -210,6 +242,12 @@ class FuseConsecutiveLoops(ppl.Pass):
         second_start = loop_analysis.get_init_assignment(second)
         if not _symbolically_equal(first_end_excl, second_start):
             return False
+        # ``[A, B)`` + ``[B, C)`` is ``[A, C)`` only if ``A <= B <= C``; else iterations are dropped or invented.
+        own_vars = [first.loop_variable, second.loop_variable]
+        second_end_excl = symbolic.simplify(symbolic.pystr_to_symbolic(loop_analysis.get_loop_end(second)) + 1)
+        if not (provably_ordered(loop_analysis.get_init_assignment(first), second_start, first.parent_graph, own_vars)
+                and provably_ordered(second_start, second_end_excl, first.parent_graph, own_vars)):
+            return False
         return self._bodies_match(first, second, scratch_index)
 
     def _single_body_state(self, loop: LoopRegion) -> Optional[SDFGState]:
@@ -256,7 +294,8 @@ class FuseConsecutiveLoops(ppl.Pass):
         """An iterator- and scratch-name-independent structural signature of a
         body state: its sorted node keys and its sorted edge descriptors
         (endpoints, connectors, memlet data / both subsets / wcr)."""
-        node_sig = sorted(_node_key(n, loop_var, local_scratch) for n in state.nodes())
+        keys = {n: _node_key(n, state, loop_var, local_scratch) for n in state.nodes()}
+        node_sig = sorted(keys.values())
         edge_sig = []
         for e in state.edges():
             subset = _normalize(str(e.data.subset), loop_var) if (e.data and e.data.subset is not None) else ''
@@ -269,8 +308,8 @@ class FuseConsecutiveLoops(ppl.Pass):
             # Connectors are the only raw fields here, and a memlet-path edge carries None while a
             # View's carries 'views'. Two edges whose endpoints canonicalize alike then reach a
             # None-vs-str comparison in the sort below, so spell an absent connector like the rest.
-            src_key = _node_key(e.src, loop_var, local_scratch)
-            dst_key = _node_key(e.dst, loop_var, local_scratch)
+            src_key = keys[e.src]
+            dst_key = keys[e.dst]
             edge_sig.append((src_key, e.src_conn or '', dst_key, e.dst_conn or '', data_name, subset, other, wcr))
         return (tuple(node_sig), tuple(sorted(edge_sig)))
 
@@ -395,6 +434,10 @@ def plan_guarded_fusion(region: ControlFlowRegion) -> Optional[GuardedFusionPlan
         bounds.append((symbolic.pystr_to_symbolic(start), symbolic.pystr_to_symbolic(end)))
     for (_, prev_end), (nxt_start, _) in zip(bounds, bounds[1:]):
         if not _symbolically_equal(symbolic.simplify(prev_end + 1), nxt_start):
+            return None
+    # As in ``FuseConsecutiveLoops``: an unordered sibling range makes the union drop or invent iterations.
+    for start, end in bounds:
+        if not provably_ordered(start, symbolic.simplify(end + 1), region, loop_vars):
             return None
 
     v = symbolic.pystr_to_symbolic(var)

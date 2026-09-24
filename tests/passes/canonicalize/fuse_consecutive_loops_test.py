@@ -22,7 +22,7 @@ import dace
 from dace.sdfg import nodes
 from dace.sdfg.state import LoopRegion
 from dace.transformation.passes.canonicalize.pipeline import canonicalize
-from dace.transformation.passes.canonicalize.fuse_consecutive_loops import FuseConsecutiveLoops
+from dace.transformation.passes.canonicalize.fuse_consecutive_loops import FuseConsecutiveLoops, plan_guarded_fusion
 from dace.transformation.passes.pattern_matching import PatternMatchAndApplyRepeated
 from dace.transformation.interstate.state_fusion_with_happens_before import StateFusionExtended
 
@@ -32,9 +32,9 @@ N = dace.symbol('N')
 @dace.program
 def _two_adjacent_sums(a: dace.float64[N], out: dace.float64[1]):
     s = 0.0
-    for i in range(0, 10):
+    for i in range(0, (N // 10) * 10):
         s = s + a[i]
-    for i in range(10, N):
+    for i in range((N // 10) * 10, N):
         s = s + a[i]
     out[0] = s
 
@@ -213,6 +213,57 @@ def test_bodies_differing_only_in_a_copy_memlets_destination_are_not_fused():
     assert FuseConsecutiveLoops().apply_pass(sdfg, {}) is None
     assert [b.label for b in sdfg.nodes()] == ["loop1", "loop2"]
     assert np.array_equal(run(sdfg), oracle)
+
+
+M = dace.symbol('M')
+
+
+@dace.program
+def _second_loop_may_be_empty(a: dace.float64[10], acc: dace.float64[1]):
+    for i in range(0, N):
+        acc[0] = acc[0] + a[i]
+    for j in range(N, M):
+        acc[0] = acc[0] + a[j]
+
+
+def test_loops_with_unordered_adjacent_ranges_are_not_fused():
+    sdfg = _second_loop_may_be_empty.to_sdfg(simplify=True)
+    assert FuseConsecutiveLoops().apply_pass(sdfg, {}) is None
+    acc = np.zeros(1)
+    sdfg(a=np.arange(1.0, 11.0), acc=acc, N=5, M=3)
+    assert _nloops(sdfg) == 2 and acc[0] == 15.0
+
+
+def test_guarded_fusion_refuses_unordered_adjacent_ranges():
+    assert plan_guarded_fusion(_second_loop_may_be_empty.to_sdfg(simplify=True)) is None
+
+
+@dace.program
+def _double(x: dace.float64[1], y: dace.float64[1]):
+    y[0] = x[0] * 2.0
+
+
+@dace.program
+def _shift(x: dace.float64[1], y: dace.float64[1]):
+    y[0] = x[0] + 100.0
+
+
+def test_loops_calling_different_nested_sdfgs_are_not_fused():
+    sdfg = dace.SDFG('different_nested_bodies')
+    sdfg.add_array('a', (10, ), dace.float64)
+    sdfg.add_array('b', (10, ), dace.float64)
+    for var, lo, hi, kernel in (('i', 0, 4, _double), ('j', 4, 10, _shift)):
+        loop = LoopRegion(var, f'{var} < {hi}', var, f'{var} = {lo}', f'{var} = {var} + 1', sdfg=sdfg)
+        st = loop.add_state(is_start_block=True)
+        nsdfg = st.add_nested_sdfg(kernel.to_sdfg(), {'x': None}, {'y': None})
+        st.add_edge(st.add_read('a'), None, nsdfg, 'x', dace.Memlet(f'a[{var}]'))
+        st.add_edge(nsdfg, 'y', st.add_write('b'), None, dace.Memlet(f'b[{var}]'))
+        sdfg.add_node(loop, is_start_block=var == 'i')
+    sdfg.add_edge(*sdfg.nodes(), dace.InterstateEdge())
+    assert FuseConsecutiveLoops().apply_pass(sdfg, {}) is None
+    b = np.zeros(10)
+    sdfg(a=np.arange(10.0), b=b)
+    assert _nloops(sdfg) == 2 and np.array_equal(b, [0, 2, 4, 6, 104, 105, 106, 107, 108, 109])
 
 
 if __name__ == "__main__":
