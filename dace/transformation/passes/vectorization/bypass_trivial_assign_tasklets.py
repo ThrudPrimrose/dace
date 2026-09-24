@@ -188,8 +188,8 @@ class BypassTrivialAssignTasklets(ppl.Pass):
             if triple is None:
                 continue
             in_e, out_e = triple
-            # Copies into different elements are separate writes: ``c[0] = z; c[1] = z`` keeps both. Key on the
-            # source node: another node of ``x`` may follow a write to ``x``.
+            # Copies into different elements are separate writes: ``c[0] = z; c[1] = z`` keeps both.
+            # Key on the source node: another node of the same data may follow a write to it.
             key = (in_e.src, str(in_e.data.subset), out_e.dst.data, str(out_e.data.subset))
             keep = seen.setdefault(key, (t, in_e.src, out_e.dst))
             if keep[0] is t:

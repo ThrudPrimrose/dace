@@ -1345,8 +1345,7 @@ class SameWriteSetIfElseToITECFG(ppl.Pass):
                 break
         if rhs is None:
             return None
-        # Only a symbol with one path-independent definition has a value to lift (the inliner's rule):
-        # a free, self-referential (``k = k - 1``) or multiply-defined symbol does not.
+        # Only a symbol with one path-independent definition (not ``k = k - 1``) has a value to lift.
         if cond_sym not in self._inline_interstate_scalar_symbols(sdfg, cond_sym, exclude=set())[1]:
             return None
         # Cond RHS may reference OTHER interstate-defined scalar symbols (staged element
@@ -1424,8 +1423,7 @@ class SameWriteSetIfElseToITECFG(ppl.Pass):
         else:
             # A symbolic value (``m = n - 1`` feeding ``m > 1``) keeps the symbol's type; ``bool`` truncates it.
             shape = (1, )
-            cond_dtype = sdfg.symbols[cond_sym] if cond_sym in sdfg.symbols else def_edge.data.new_symbols(
-                sdfg, sdfg.symbols)[cond_sym]
+            cond_dtype = sdfg.symbols.get(cond_sym) or def_edge.data.new_symbols(sdfg, sdfg.symbols)[cond_sym]
         cond_name, _ = sdfg.add_array(name=f"_cond_{cond_sym}",
                                       shape=shape,
                                       dtype=cond_dtype,

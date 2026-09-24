@@ -170,9 +170,7 @@ def set_default_schedule_and_storage_types(scope: Union[SDFG, SDFGState, nodes.E
                                                    state=state,
                                                    child_nodes=state.scope_children())
 
-        # Take care of remaining scalars without access nodes. Data WITH an access node that is still
-        # Default was left so by an undetermined parent schedule (an expansion inferred before its
-        # parent was), and belongs to the inference that later resolves that parent, not to the stack.
+        # Take care of remaining scalars without access nodes; accessed Default data awaits its parent's schedule
         accessed = {node.data for state in scope.states() for node in state.data_nodes()}
         for aname, desc in scope.arrays.items():
             # If not transient in a nested SDFG, take storage from parent, regardless of current type

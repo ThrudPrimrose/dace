@@ -972,11 +972,10 @@ class OffloadToAccelerator(ppl.Pass):
         Placement follows them, and relies on it (tsvc_2_5 ``reduce_inner_carry`` keeps its taskloop's
         output on the device that way). A write analysis must not: an empty memlet only orders, so the
         scalars CloudSC orders after ``zpsupsatsrce`` are not written by the kernel before them. Nor
-        does it follow ``through_copies``: past the first non-view access node an edge is a copy the
-        host issues, so polybench durbin's staged ``alpha_host`` is not written by the kernel before it.
+        does it follow host-issued copies past a non-view node (``through_copies``; durbin's ``alpha_host``).
         """
 
-        def recursion(node: nodes.Node, visited_set: OrderedSet[nodes.Node]) -> OrderedSet[str]:
+        def recursion(node: nodes.Node, visited_set: OrderedSet[nodes.Node]):
             # the visited set is necessary for edge cases, e.g. an access node A whose successor B is a view node
             # refering back to A
             if node in visited_set:

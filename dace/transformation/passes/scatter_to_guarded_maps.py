@@ -159,11 +159,9 @@ class ScatterToGuardedMaps(ppl.Pass):
             # -- npbench mandelbrot2 under the canonicalize+vectorize pipeline).
             plan = joint_guard_plan(sdfg, loop, write)
             trap_sym = guard_joint_scatter_write(sdfg, loop, write, emit_trap=not self.emit_unparallelized_else_branch)
-            if trap_sym is not None:
+            if trap_sym is not None and plan is not None:
                 joint_dup_syms.setdefault(id(loop), []).append(trap_sym)
-                if plan is not None and plan.map_dims:
-                    # The count is bound where the guard was hoisted to, so the dispatch goes there too.
-                    joint_anchors[id(loop)] = plan.anchor
+                joint_anchors[id(loop)] = plan.anchor  # the count is bound beside the (hoisted) guard: dispatch there
 
         # Track each idx_array's duplicate-count symbol so the else-branch
         # dispatcher knows which symbol to gate on per scatter loop. None when
@@ -203,7 +201,12 @@ class ScatterToGuardedMaps(ppl.Pass):
                 if trap_sym is not None:
                     sliced_dup_syms[(id(loop), idx_name)] = trap_sym
                     # The dispatcher reading the count sits in owner_sdfg, below the hoisted guard.
-                    pass_symbol_down_to(owner_sdfg, host_sdfg, trap_sym)
+                    inner = owner_sdfg
+                    while inner is not host_sdfg:
+                        if trap_sym not in inner.symbols:
+                            inner.add_symbol(trap_sym, host_sdfg.symbols[trap_sym])
+                        inner.parent_nsdfg_node.symbol_mapping[trap_sym] = symbolic.pystr_to_symbolic(trap_sym)
+                        inner = inner.parent_sdfg
             except ValueError as exc:
                 if 'already exists' not in str(exc):
                     raise
@@ -218,8 +221,7 @@ class ScatterToGuardedMaps(ppl.Pass):
                 # A joint key already answers for every dimension of this loop's writes, so its
                 # counts alone decide the branch -- the per-array symbols below are empty here.
                 cond = ' + '.join(joint_dup_syms[id(loop)]) + ' > 0'
-                anchor = joint_anchors.get(id(loop), loop)
-                _wrap_loop_in_dispatcher(anchor.parent_graph, loop, cond, anchor)
+                _wrap_loop_in_dispatcher(joint_anchors[id(loop)].parent_graph, loop, cond, joint_anchors[id(loop)])
                 continue
 
             if self.emit_unparallelized_else_branch and (dup_count_syms or sliced_dup_syms):
@@ -997,24 +999,6 @@ def _owning_sdfg(root: SDFG, loop: LoopRegion) -> SDFG:
     return root  # defensive fallback
 
 
-def pass_symbol_down_to(inner: SDFG, outer: SDFG, name: str) -> None:
-    """Forward the symbol ``name``, defined in ``outer``, unrenamed through every nested SDFG node
-    between ``outer`` and ``inner`` (an SDFG nested somewhere below ``outer``, or ``outer`` itself).
-
-    ``name`` is bound by an interstate edge in ``outer``; a nested SDFG only sees a symbol of an
-    enclosing SDFG through its ``symbol_mapping``, so each level on the way down declares it and
-    maps it to the same name one level up.
-    """
-    dtype = outer.symbols[name]
-    current = inner
-    while current is not outer:
-        nsdfg = current.parent_nsdfg_node
-        if name not in current.symbols:
-            current.add_symbol(name, dtype)
-        nsdfg.symbol_mapping[name] = symbolic.pystr_to_symbolic(name)
-        current = current.parent_sdfg
-
-
 def _hoist_slice_region(sdfg: SDFG, owner_sdfg: SDFG, index_slice: ScatterIndexSlice):
     """Return the control-flow region a sliced guard's STATES should be placed into.
 
@@ -1179,33 +1163,6 @@ def _write_index_input_connectors(nsdfg_node: nodes.NestedSDFG, out_conn: str) -
     return idx_conns
 
 
-def privatize_clone_local_transients(owner_sdfg: SDFG, loop: LoopRegion, clone: LoopRegion) -> None:
-    """Give ``clone`` its own copy of every transient that only ``loop`` accesses.
-
-    A deep-copied loop still names the original's containers, so a scratch transient of the loop body
-    (``a_slice = b[i]; a[ip[i]] = a_slice``) gains an access node outside ``loop``. ``LoopToMap`` then no
-    longer sees it as loop-local, does not privatize it into the map body, and -- lifting under the
-    permissive scatter contract -- lets every iteration share one scalar. Renaming the clone's copy
-    keeps the transient loop-local for the lift; only one branch of the dispatcher ever runs.
-
-    :param owner_sdfg: The SDFG whose arrays ``loop`` accesses directly.
-    :param loop: The loop about to be lifted to a map.
-    :param clone: The deep copy of ``loop``, already placed in the dispatcher.
-    """
-    loop_states = set(loop.all_states())
-    clone_states = set(clone.all_states())
-    loop_names = {n.data for st in loop_states for n in st.data_nodes() if owner_sdfg.arrays[n.data].transient}
-    outside_names = {
-        n.data
-        for st in owner_sdfg.states() if st not in loop_states and st not in clone_states for n in st.data_nodes()
-    }
-    repl: Dict[str, str] = {}
-    for name in sorted(loop_names - outside_names):
-        repl[name] = owner_sdfg.add_datadesc(name + '_seq', copy.deepcopy(owner_sdfg.arrays[name]), find_new_name=True)
-    if repl:
-        clone.replace_dict(repl)
-
-
 def _wrap_loop_in_dispatcher(parent,
                              loop: LoopRegion,
                              condition_expr: str,
@@ -1226,9 +1183,7 @@ def _wrap_loop_in_dispatcher(parent,
     :param condition_expr: The guard expression (e.g. ``"__dup_count > 0"``)
         for the ``True`` branch (sequential clone). The ``False`` branch is
         unguarded.
-    :param block: The block of ``parent`` to clone and dispatch on, when it is not ``loop`` itself
-        but a state holding the map nest ``loop`` sits in (a guard hoisted out of a trivial map
-        wrapper, see :func:`joint_guard_plan`). ``loop`` is still the one lifted and pinned.
+    :param block: The block of ``parent`` to clone, when not ``loop`` itself (a hoisted guard's state).
     """
     import copy as _copy
     from dace.sdfg.state import ConditionalBlock, ControlFlowRegion
@@ -1244,8 +1199,7 @@ def _wrap_loop_in_dispatcher(parent,
     # Pin the fallback so no later parallelizer re-lifts it, and so a parallelism
     # counter can treat this guarded region as fully parallel (the pinned clone is
     # the collision fallback, not a genuinely-sequential loop) -- same marker the
-    # specialize-family fallbacks carry (loop_specialization.py). Set on ``loop`` for the copy
-    # only, so it also lands on the clone when ``loop`` sits inside ``block``.
+    # specialize-family fallbacks carry (loop_specialization.py). Pinned for the copy only.
     was_pinned = loop.pinned_sequential
     loop.pinned_sequential = True
     sequential_clone = _copy.deepcopy(block)
@@ -1270,8 +1224,13 @@ def _wrap_loop_in_dispatcher(parent,
     cb.add_branch(condition_expr, seq_branch)
     cb.add_branch(None, par_branch)
     if block is loop:
-        # A cloned state's nested sdfgs already carry their own descriptors; a cloned loop shares its owner's.
-        privatize_clone_local_transients(parent.sdfg, loop, sequential_clone)
+        # The clone must not share loop-local scratch, or LoopToMap stops privatizing it into the map.
+        owner, inside = parent.sdfg, set(loop.all_states()) | set(sequential_clone.all_states())
+        local = {n.data for st in loop.all_states() for n in st.data_nodes() if owner.arrays[n.data].transient}
+        local -= {n.data for st in owner.states() if st not in inside for n in st.data_nodes()}
+        repl = {n: owner.add_datadesc(n + '_seq', copy.deepcopy(owner.arrays[n]), find_new_name=True) for n in sorted(local)}
+        if repl:
+            sequential_clone.replace_dict(repl)
 
     for e in in_edges:
         parent.add_edge(e.src, cb, e.data)

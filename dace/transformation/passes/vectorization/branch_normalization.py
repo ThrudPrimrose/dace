@@ -213,8 +213,7 @@ class BranchNormalization(ppl.Pass):
         # Hoist branch-invariant symbol bindings (frontend ``__sym_z1 = z1`` alias
         # state) out of arms first -> "empty-assign -> compute" arm reduces to its
         # one substantive state for the single-state ITE path. Branch-variant
-        # assignments stay + are refused downstream. The hoist stands on its own when
-        # the rewrite is then refused, so it is reported; a repeat hoist is a no-op.
+        # assignments stay + are refused downstream. A hoist is a change even if the rewrite is refused.
         hoisted = self._hoist_branch_invariant_assignments(cb)
 
         branches = cb.branches
@@ -461,22 +460,6 @@ class BranchNormalization(ppl.Pass):
                     written |= blk.read_and_write_sets()[1]
         return written
 
-    @staticmethod
-    def arm_assigned_symbols(cb: ConditionalBlock) -> OrderedSet[str]:
-        """Symbols rebound anywhere inside an arm of ``cb``: interstate assignments and loop variables.
-
-        :param cb: conditional block whose arms are scanned.
-        :returns: the rebound symbol names.
-        """
-        assigned: OrderedSet[str] = OrderedSet()
-        for _cond, body in cb.branches:
-            for region in body.all_control_flow_regions():
-                if isinstance(region, LoopRegion) and region.loop_variable:
-                    assigned.add(region.loop_variable)
-            for edge in body.all_interstate_edges():
-                assigned.update(edge.data.assignments.keys())
-        return assigned
-
     def representative_write_subset(self, cb: ConditionalBlock) -> str | None:
         """First element-write subset found in ``cb``'s arms, or ``None`` if there is none.
 
@@ -529,15 +512,15 @@ class BranchNormalization(ppl.Pass):
         :param cond_text: one of its guards, as written.
         :param lifter: the instance whose lifts would snapshot the guard.
         :returns: ``False`` when no arm writes data the guard reads, ``True`` when one does and the
-            guard can be snapshotted, ``None`` when one does and it cannot, or when an arm rebinds a
-            symbol the guard reads (a snapshot would itself read the rebound symbol).
+            guard can be snapshotted, ``None`` when one does and it cannot or an arm rebinds a guard symbol.
         """
         local_sdfg: dace.SDFG = cb.sdfg
         # The guard usually names interstate symbols staging element reads (``a_index = a[i]``);
         # expand them so the array dependence is visible. Read-only — nothing is pruned here.
         expanded = lifter._inline_interstate_scalar_symbols(local_sdfg, cond_text, exclude=set())[0]
-        guard_names = symbolic.symbols_in_code(cond_text) | symbolic.symbols_in_code(expanded)
-        if not self.arm_assigned_symbols(cb).isdisjoint(guard_names):
+        rebound = {r.loop_variable for _, b in cb.branches for r in b.all_control_flow_regions() if isinstance(r, LoopRegion)}
+        rebound |= {a for _, b in cb.branches for e in b.all_interstate_edges() for a in e.data.assignments}
+        if rebound & (symbolic.symbols_in_code(cond_text) | symbolic.symbols_in_code(expanded)):
             return None
         try:
             names = set(symbolic.arrays(expanded)) | set(symbolic.free_symbols_and_functions(expanded))

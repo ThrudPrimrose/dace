@@ -940,25 +940,14 @@ def test_a_small_map_kept_on_the_host_computes_what_numpy_computes():
     np.testing.assert_allclose(out, want)
 
 
-def kernel_then_host_staging_copy() -> dace.SDFG:
-    """A kernel writes ``A``; host code then copies ``A[0]`` into the host Scalar ``s``."""
+def test_a_host_copy_out_of_a_kernel_output_is_not_a_kernel_write():
     sdfg = dace.SDFG('kernel_then_host_staging_copy')
     sdfg.add_array('A', [8], dace.float64, storage=dtypes.StorageType.GPU_Global)
     sdfg.add_scalar('s', dace.float64, transient=True)
-    state = sdfg.add_state('main', is_start_block=True)
-    _, _, exit_node = state.add_mapped_tasklet('fill', {'i': '0:8'}, {},
-                                               'a = 1.0', {'a': dace.Memlet('A[i]')},
-                                               schedule=dtypes.ScheduleType.GPU_Device,
-                                               external_edges=True)
-    written = state.out_edges(exit_node)[0].dst
-    state.add_edge(written, None, state.add_write('s'), None, dace.Memlet('A[0] -> [0]'))
-    return sdfg
-
-
-def test_a_host_copy_out_of_a_kernel_output_is_not_a_kernel_write():
-    """The staged host Scalar downstream of the kernel's output is written by a copy the host issues,
-    so it may stay by value (polybench durbin's ``alpha_host``)."""
-    sdfg = kernel_then_host_staging_copy()
+    state = sdfg.add_state()
+    _, _, exit_node = state.add_mapped_tasklet('fill', {'i': '0:8'}, {}, 'a = 1.0', {'a': dace.Memlet('A[i]')},
+                                               schedule=dtypes.ScheduleType.GPU_Device, external_edges=True)
+    state.add_edge(state.out_edges(exit_node)[0].dst, None, state.add_write('s'), None, dace.Memlet('A[0] -> [0]'))
 
     written = OffloadToAccelerator().data_written_by_device_code(sdfg)
 
