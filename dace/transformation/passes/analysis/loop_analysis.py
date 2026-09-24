@@ -180,6 +180,14 @@ def get_loop_stride(loop: LoopRegion) -> Optional[symbolic.SymbolicType]:
     return None
 
 
+def trip_count(start: symbolic.SymbolicType, end: symbolic.SymbolicType,
+               stride: symbolic.SymbolicType) -> symbolic.SymbolicType:
+    """Trip count of ``start..end`` (inclusive) by ``stride``, exact under C's truncating ``/``; ``<= 0`` if empty."""
+    if stride.is_negative:
+        return symbolic.int_floor(start - end - stride, -stride)
+    return symbolic.int_floor(end - start + stride, stride)
+
+
 def _provably_le(a: symbolic.SymbolicType, b: symbolic.SymbolicType) -> bool:
     """Prove ``a <= b`` SOUNDLY, returning ``False`` when it cannot be decided (never a guess).
 

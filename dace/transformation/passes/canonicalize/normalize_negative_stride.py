@@ -7,7 +7,7 @@ visits the same values of ``i`` as
 
     for _j in range(0, trip): i = start + (-k) * _j
 
-where ``trip = (start - end_inclusive) // k + 1``. The body sees ``i`` having
+where ``trip = loop_analysis.trip_count(start, end_inclusive, -k)``. The body sees ``i`` having
 the same per-iteration values in the same order, so downstream passes that
 require positive stride (``LoopToMap``'s linear-affine subset classifier,
 ``LoopToScan``'s ``stride != 1`` refusal, ``RerollUnrolledLoops``) can match
@@ -110,7 +110,7 @@ class NormalizeNegativeStride(ppl.Pass):
         if start is None or end is None:
             return False
         try:
-            trip = symbolic.simplify(symbolic.int_floor(start - end, -stride) + 1)
+            trip = symbolic.simplify(loop_analysis.trip_count(start, end, stride))
         except Exception:
             return False
 

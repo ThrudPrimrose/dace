@@ -13,7 +13,7 @@ import dace
 from dace.sdfg import nodes
 from dace.sdfg.state import LoopRegion
 from dace.transformation.passes.analysis import loop_analysis
-from dace.transformation.passes.canonicalize.normalize_loops_and_maps import NormalizeLoopsAndMaps
+from dace.transformation.passes.canonicalize.normalize_loops_and_maps import NormalizeLoopsAndMaps, NormalizeStridedMaps
 from dace.transformation.passes.insert_assign_tasklets_at_map_boundary import InsertAssignTaskletsAtMapBoundary
 from dace.transformation.passes.insert_unit_copy_assign_tasklets import InsertAssignTaskletsForUnitCopies
 
@@ -392,6 +392,24 @@ def test_a_copy_memlets_other_subset_is_normalized_too():
     entry = next(n for n in sdfg.states()[0].nodes() if isinstance(n, nodes.MapEntry))
     assert str(entry.map.range) == "0:3", str(entry.map.range)
     assert np.array_equal(run(copy.deepcopy(sdfg)), oracle)
+
+
+@pytest.mark.parametrize('pass_cls', [NormalizeStridedMaps, NormalizeLoopsAndMaps])
+def test_empty_strided_map_and_loop_stay_empty(pass_cls):
+
+    @dace.program
+    def prog(A: dace.float64[8], B: dace.float64[8]):
+        for i in dace.map[3:N:2]:
+            A[i] = 1.0
+        for j in range(3, N, 2):
+            B[j] = 1.0
+
+    sdfg = prog.to_sdfg(simplify=True)
+    assert pass_cls().apply_pass(sdfg, {}) is not None
+    A, B = np.zeros(8), np.zeros(8)
+    sdfg(A=A, B=B, N=3)
+    assert all(b == 0 and s == 1 for b, _, s in _map_ranges(sdfg))
+    assert not A.any() and not B.any()
 
 
 if __name__ == "__main__":

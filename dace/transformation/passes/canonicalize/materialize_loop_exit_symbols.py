@@ -47,6 +47,7 @@ import ast
 from typing import Dict, List, Optional, Set, Tuple
 
 import dace
+import sympy
 from dace import SDFG, properties, symbolic
 from dace.sdfg.sdfg import InterstateEdge
 from dace.sdfg.state import AbstractControlFlowRegion, ControlFlowBlock, ControlFlowRegion, LoopRegion, SDFGState
@@ -162,7 +163,7 @@ def _detect_iv_symbols(loop: LoopRegion, sdfg: SDFG, sdfg_free_symbols: Set[str]
 
 
 def _trip_count(loop: LoopRegion) -> Optional[str]:
-    """Compute ``(end - init) // stride + 1`` as a sympy expression string."""
+    """The loop's exact trip count (zero for an empty loop) as a sympy expression string."""
     start = loop_analysis.get_init_assignment(loop)
     end = loop_analysis.get_loop_end(loop)
     stride = loop_analysis.get_loop_stride(loop)
@@ -171,7 +172,7 @@ def _trip_count(loop: LoopRegion) -> Optional[str]:
     try:
         # int_floor, never `//`: sympy distributes floor() over the sum and sym2cpp drops it, so the
         # materialized trip count would truncate term by term.
-        n = symbolic.simplify(symbolic.int_floor(end - start, stride) + 1)
+        n = symbolic.simplify(sympy.Max(0, loop_analysis.trip_count(start, end, stride)))
     except Exception:
         return None
     return symbolic.symstr(n)

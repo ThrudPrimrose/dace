@@ -5,7 +5,7 @@
 step, so it cannot produce the canonical zero-based / unit-stride form. This
 pass does: for a map parameter ``p`` with range ``b:e:s`` it substitutes
 ``p -> b + s*p`` in the map's own scope (memlets + tasklets, param-local) and
-sets the range to ``0:(e-b)//s:1``. ``LoopRegion`` counters are normalized the
+sets the range to ``0:trip_count(b, e, s)-1:1``. ``LoopRegion`` counters are normalized the
 same way. The substitution is value-preserving, so the SDFG result is
 unchanged. It reuses ``OffsetLoopsAndMaps``' tasklet token-replacement helpers.
 """
@@ -99,10 +99,10 @@ class NormalizeLoopsAndMaps(OffsetLoopsAndMaps):
             if b == 0 and s == 1:
                 continue
             psym = dace.symbolic.pystr_to_symbolic(p)
-            # p_original = b + s * p_new ; p_new in 0 : floor((e-b)/s) : 1
+            # p_original = b + s * p_new ; p_new in 0 : trip - 1 : 1
             subsdict[psym] = b + s * psym
             repldict[str(p)] = f"({b} + ({s}) * {p})"
-            new_ranges[i] = (0, dace.symbolic.int_floor(e - b, s), 1)
+            new_ranges[i] = (0, loop_analysis.trip_count(b, e, s) - 1, 1)
             changed = True
         scope = state.scope_subgraph(me, include_entry=True, include_exit=True)
         if not changed or tasklets_assign(scope.nodes(), repldict):
@@ -154,8 +154,8 @@ class NormalizeLoopsAndMaps(OffsetLoopsAndMaps):
         """Normalize one ``LoopRegion`` to a ``0 : n : 1`` counter in place.
 
         ``loop_analysis.get_loop_end`` returns the inclusive last iteration
-        value for ``< <= > >=``; with ``start``/``step`` the exact trip count
-        is ``floor((end-start)/step)+1``. The body is rewritten
+        value for ``< <= > >=``; the trip count is ``loop_analysis.trip_count``
+        (``<= 0`` when empty). The body is rewritten
         ``var -> start + step*var`` (value-preserving) and the header reset to
         ``var=0 ; var < n ; var = var+1``.
 
@@ -171,7 +171,7 @@ class NormalizeLoopsAndMaps(OffsetLoopsAndMaps):
         if start == 0 and step == 1:
             return False
 
-        n = dace.symbolic.int_floor(end - start, step) + 1
+        n = loop_analysis.trip_count(start, end, step)
         repldict = {str(var): f"(({start}) + ({step}) * {var})"}
         if tasklets_assign((node for st in loop.all_states() for node in st.nodes()), repldict):
             return False
@@ -258,7 +258,7 @@ class NormalizeLoopBounds(NormalizeLoopsAndMaps):
 class NormalizeStridedMaps(NormalizeLoopsAndMaps):
     """Normalize only maps that carry a NON-UNIT step to ``0:trip:1``, folding
     the step into the index (``a[i]`` under ``0:N:2`` -> ``a[2*k]`` under
-    ``0:int_floor(N-1,2)+1:1``). Unit-step maps and every ``LoopRegion`` counter
+    ``0:int_floor(N+1,2):1``). Unit-step maps and every ``LoopRegion`` counter
     are left untouched.
 
     The multi-dim tiler requires unit-step maps -- ``MarkTileDims`` and
@@ -272,8 +272,7 @@ class NormalizeStridedMaps(NormalizeLoopsAndMaps):
     ``for i in range(0, N, 2)`` lifts to then becomes dense, and its ``a[2*k]``
     read is a plain STRIDED index the tiler's existing ``dim_strides`` machinery
     vectorizes with no step-aware change anywhere in the tile lowering. The
-    ``p -> b + s*p`` substitution is value-preserving; the ``int_floor(e-b, s)``
-    trip is nonnegative under the canon "symbols nonnegative" contract.
+    ``p -> b + s*p`` substitution is value-preserving, and an empty map stays empty.
     """
 
     def apply_pass(self, sdfg: dace.SDFG, _: Dict) -> Optional[int]:
