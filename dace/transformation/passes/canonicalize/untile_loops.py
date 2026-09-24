@@ -77,11 +77,13 @@ import sympy
 
 import dace
 from dace import SDFG, dtypes, properties, symbolic
+from dace.ordered import OrderedSet
 from dace.sdfg import nodes
 from dace.sdfg.graph import NodeNotFoundError
 from dace.sdfg.state import LoopRegion, SDFGState, ControlFlowRegion
 from dace.transformation import pass_pipeline as ppl
 from dace.transformation import transformation as xf
+from dace.transformation.interstate.loop_to_map import LoopToMap
 from dace.transformation.passes.analysis import loop_analysis
 from dace.transformation.passes.canonicalize.tracked_assumptions import record_assumption
 
@@ -509,6 +511,16 @@ def depends_only_on_sum(ex: sympy.Basic, i_sym: sympy.Symbol, ii_sym: sympy.Symb
         return False
 
 
+def non_memlet_names(inner: LoopRegion) -> OrderedSet[str]:
+    """Names read outside memlets in ``inner``'s body, where the substitution cannot be audited."""
+    names = OrderedSet(n for st in inner.all_states() for node in st.nodes() for n in node.free_symbols)
+    for region in inner.all_control_flow_regions():
+        names |= OrderedSet(n for e in region.edges() for n in e.data.free_symbols)
+        if region is not inner:
+            names |= OrderedSet(n for c in region.get_meta_codeblocks() for n in symbolic.symbols_in_code(c.as_string))
+    return names
+
+
 def _audit_combined_access(inner: LoopRegion, outer_var: str, inner_var: str, case: str) -> bool:
     """The structural safety check the docstring describes.
 
@@ -841,6 +853,9 @@ class UntileLoops(ppl.Pass):
     def audit_candidate(self, candidate: LoopRegion, outer_var: str, case: str, clamped: bool,
                         K_expr: symbolic.SymbolicType, K_const: Optional[int], sdfg: SDFG) -> Optional[BlockedArrays]:
         """Arrays to unblock before collapsing ``candidate`` with its outer tile loop, or ``None`` to refuse."""
+        names = non_memlet_names(candidate)
+        if outer_var in names or (case == 'A' and candidate.loop_variable in names):
+            return None
         if not self.unblock_arrays:
             return {} if _audit_combined_access(candidate, outer_var, candidate.loop_variable, case) else None
         # The unblock rewrite has no remainder-tile form; canonicalize collapses a clamped nest later.
@@ -902,6 +917,13 @@ class UntileLoops(ppl.Pass):
             # intermediates DO reference outer.var) are handled by
             # fixpoint level-by-level instead.
             if candidate is not outer and not _intermediate_chain_clean(outer, candidate, outer.loop_variable):
+                continue
+            # Collapsing moves ``candidate`` outward past the loops between; legal only if each carries nothing.
+            between = candidate.parent_graph
+            while between is not outer and (not isinstance(between, LoopRegion)
+                                            or LoopToMap.can_be_applied_to(sdfg, loop=between)):
+                between = between.parent_graph
+            if between is not outer:
                 continue
             inner = candidate
             case = cand_case
