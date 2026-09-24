@@ -40,7 +40,8 @@ def test_unconditional_constant_index_promoted():
     constant index every iteration. The pass promotes; LoopToMap then accepts."""
 
     @dace.program
-    def kern(arr: dace.float64[5], out: dace.float64[N], scale: dace.float64[N]):
+    def kern(arr_in: dace.float64[5], out: dace.float64[N], scale: dace.float64[N]):
+        arr = np.copy(arr_in)
         for jl in range(N):
             arr[1] = 0.002 * scale[jl]
             out[jl] = arr[1] * scale[jl]
@@ -58,10 +59,26 @@ def test_unconditional_constant_index_promoted():
     arr = rng.random(5)
     scale = rng.random(n)
     out = np.zeros(n)
-    sdfg(arr=arr, out=out, scale=scale, N=n)
+    sdfg(arr_in=arr, out=out, scale=scale, N=n)
     # The numpy oracle: each iteration writes arr[1] = 0.002 * scale[jl] then reads it back.
     expected = (0.002 * scale) * scale
     assert np.allclose(out, expected)
+
+
+def test_written_slot_of_caller_array_keeps_its_last_value():
+
+    @dace.program
+    def kern(arr: dace.float64[5], out: dace.float64[N], scale: dace.float64[N]):
+        for jl in range(N):
+            arr[1] = 2.0 * scale[jl]
+            out[jl] = arr[1]
+
+    sdfg = kern.to_sdfg(simplify=True)
+    res = PromoteConstantIndexAccess().apply_pass(sdfg, {})
+    arr = np.zeros(5)
+    sdfg(arr=arr, out=np.zeros(4), scale=np.arange(4.0), N=4)
+    assert res is None
+    assert arr[1] == 6.0
 
 
 def test_refuses_conditional_write_with_unconditional_read():
@@ -137,7 +154,8 @@ def test_promotes_when_only_other_slots_are_live_out():
     externally even though ``arr`` (at other slots) is live."""
 
     @dace.program
-    def kern(arr: dace.float64[5], out: dace.float64[N], post: dace.float64[1], scale: dace.float64[N]):
+    def kern(arr_in: dace.float64[5], out: dace.float64[N], post: dace.float64[1], scale: dace.float64[N]):
+        arr = np.copy(arr_in)
         for jl in range(N):
             arr[1] = 0.002 * scale[jl]
             out[jl] = arr[1] * scale[jl]
@@ -198,7 +216,8 @@ def test_idempotent():
     structural candidate is gone), so the pass returns ``None``."""
 
     @dace.program
-    def kern(arr: dace.float64[5], out: dace.float64[N], scale: dace.float64[N]):
+    def kern(arr_in: dace.float64[5], out: dace.float64[N], scale: dace.float64[N]):
+        arr = np.copy(arr_in)
         for jl in range(N):
             arr[3] = 0.002 * scale[jl]
             out[jl] = arr[3] * scale[jl]
@@ -215,7 +234,8 @@ def test_numeric_correctness_then_loop_to_map_maps():
     numpy reference at full IEEE precision."""
 
     @dace.program
-    def kern(arr: dace.float64[5], out: dace.float64[N], scale: dace.float64[N]):
+    def kern(arr_in: dace.float64[5], out: dace.float64[N], scale: dace.float64[N]):
+        arr = np.copy(arr_in)
         for jl in range(N):
             arr[1] = 0.002 * scale[jl]
             out[jl] = arr[1] * scale[jl] + 1.5
@@ -233,7 +253,7 @@ def test_numeric_correctness_then_loop_to_map_maps():
     arr = rng.random(5)
     scale = rng.random(n)
     out = np.zeros(n)
-    sdfg(arr=arr, out=out, scale=scale, N=n)
+    sdfg(arr_in=arr, out=out, scale=scale, N=n)
     expected = (0.002 * scale) * scale + 1.5
     assert np.allclose(out, expected)
 
@@ -244,7 +264,8 @@ def test_promotes_and_lifts_when_other_slot_lives_out():
     numeric result matches the un-promoted Python reference."""
 
     @dace.program
-    def kern(arr: dace.float64[5], out: dace.float64[N], scale: dace.float64[N], sink: dace.float64[1]):
+    def kern(arr_in: dace.float64[5], out: dace.float64[N], scale: dace.float64[N], sink: dace.float64[1]):
+        arr = np.copy(arr_in)
         for jl in range(N):
             arr[1] = 0.002 * scale[jl]
             out[jl] = arr[1] * scale[jl] + 1.5
@@ -275,7 +296,7 @@ def test_promotes_and_lifts_when_other_slot_lives_out():
     arr_run = arr_in.copy()
     out_run = np.zeros(n)
     sink_run = np.zeros(1)
-    sdfg(arr=arr_run, out=out_run, scale=scale, sink=sink_run, N=n)
+    sdfg(arr_in=arr_run, out=out_run, scale=scale, sink=sink_run, N=n)
     assert np.allclose(out_run, out_ref)
     assert np.allclose(sink_run, sink_ref)
 
@@ -294,7 +315,8 @@ def test_promotes_multiple_distinct_constant_slots_of_same_array():
     """
 
     @dace.program
-    def kern(arr: dace.float64[5], out: dace.float64[N], scale: dace.float64[N]):
+    def kern(arr_in: dace.float64[5], out: dace.float64[N], scale: dace.float64[N]):
+        arr = np.copy(arr_in)
         for jl in range(N):
             arr[0] = 0.002 * scale[jl]
             arr[1] = 0.003 * scale[jl]
@@ -327,7 +349,7 @@ def test_promotes_multiple_distinct_constant_slots_of_same_array():
 
     arr_run = arr_in.copy()
     out_run = np.zeros(n)
-    sdfg(arr=arr_run, out=out_run, scale=scale, N=n)
+    sdfg(arr_in=arr_run, out=out_run, scale=scale, N=n)
     assert np.allclose(
         out_run,
         out_ref), (f'Multi-slot promotion changed the numeric result. got={out_run[:4]}, expected={out_ref[:4]}')
@@ -344,7 +366,8 @@ def test_promotes_cloudsc_for767_species_pattern():
     same PCIA refusal; this test is the minimal faithful reproducer."""
 
     @dace.program
-    def kern(zvqx: dace.float64[5], pre_ice: dace.float64[N], zdtgdp: dace.float64[N], out: dace.float64[N]):
+    def kern(zvqx_in: dace.float64[5], pre_ice: dace.float64[N], zdtgdp: dace.float64[N], out: dace.float64[N]):
+        zvqx = np.copy(zvqx_in)
         for jl in range(N):
             zvqx[0] = 0.001 * pre_ice[jl] + zdtgdp[jl]
             zvqx[1] = 0.002 * pre_ice[jl] + zdtgdp[jl]
@@ -379,7 +402,7 @@ def test_promotes_cloudsc_for767_species_pattern():
 
     zvqx_run = zvqx_in.copy()
     out_run = np.zeros(n)
-    sdfg(zvqx=zvqx_run, pre_ice=pre_ice, zdtgdp=zdtgdp, out=out_run, N=n)
+    sdfg(zvqx_in=zvqx_run, pre_ice=pre_ice, zdtgdp=zdtgdp, out=out_run, N=n)
     assert np.allclose(
         out_run,
         out_ref), (f'5-species multi-slot promotion changed the result. got={out_run[:3]} expected={out_ref[:3]}')
@@ -443,7 +466,8 @@ def test_promotes_outer_loop_with_multiple_inner_constant_indexed_writes():
     """
 
     @dace.program
-    def kern(arr: dace.float64[5], out: dace.float64[N], scale: dace.float64[N]):
+    def kern(arr_in: dace.float64[5], out: dace.float64[N], scale: dace.float64[N]):
+        arr = np.copy(arr_in)
         for jl in range(N):
             arr[0] = scale[jl] * 0.1
             arr[1] = scale[jl] * 0.2
@@ -474,7 +498,7 @@ def test_promotes_outer_loop_with_multiple_inner_constant_indexed_writes():
         out_ref[jl] = arr_ref[0] + arr_ref[1] + arr_ref[2] + arr_ref[3]
     arr_run = arr_in.copy()
     out_run = np.zeros(n)
-    sdfg(arr=arr_run, out=out_run, scale=scale, N=n)
+    sdfg(arr_in=arr_run, out=out_run, scale=scale, N=n)
     assert np.allclose(out_run, out_ref)
 
 
@@ -486,7 +510,8 @@ def test_promotes_multi_dim_constant_slot():
     """
 
     @dace.program
-    def kern(arr: dace.float64[6, 8], out: dace.float64[N], scale: dace.float64[N]):
+    def kern(arr_in: dace.float64[6, 8], out: dace.float64[N], scale: dace.float64[N]):
+        arr = np.copy(arr_in)
         for jl in range(N):
             arr[3, 5] = 0.001 * scale[jl]
             out[jl] = arr[3, 5] * scale[jl]
@@ -509,7 +534,7 @@ def test_promotes_multi_dim_constant_slot():
         out_ref[jl] = arr_ref[3, 5] * scale[jl]
     arr_run = arr_in.copy()
     out_run = np.zeros(n)
-    sdfg(arr=arr_run, out=out_run, scale=scale, N=n)
+    sdfg(arr_in=arr_run, out=out_run, scale=scale, N=n)
     assert np.allclose(out_run, out_ref)
 
 
@@ -907,7 +932,8 @@ def test_promotes_when_write_dominates_read_across_states():
     """
 
     @dace.program
-    def kern(arr: dace.float64[5], out: dace.float64[N], scale: dace.float64[N], tmp: dace.float64[N]):
+    def kern(arr_in: dace.float64[5], out: dace.float64[N], scale: dace.float64[N], tmp: dace.float64[N]):
+        arr = np.copy(arr_in)
         for jl in range(N):
             arr[1] = 0.002 * scale[jl]
             tmp[jl] = scale[jl] + 1.0
@@ -928,7 +954,7 @@ def test_promotes_when_write_dominates_read_across_states():
 
     out = np.zeros(n)
     tmp = np.zeros(n)
-    sdfg(arr=arr_in.copy(), out=out, scale=scale, tmp=tmp, N=n)
+    sdfg(arr_in=arr_in.copy(), out=out, scale=scale, tmp=tmp, N=n)
     assert np.allclose(tmp, expected_tmp)
     assert np.allclose(out, expected_out)
 

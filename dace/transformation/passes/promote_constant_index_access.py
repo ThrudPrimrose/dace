@@ -338,7 +338,8 @@ class PromoteConstantIndexAccess(ppl.Pass):
                 desc = sdfg.arrays.get(name)
                 if not isinstance(desc, data.Array):
                     continue
-                if desc.lifetime not in _PRIVATIZABLE_LIFETIMES:
+                # A non-transient slot is live-out to the caller and the pass emits no writeback.
+                if desc.lifetime not in _PRIVATIZABLE_LIFETIMES or not desc.transient:
                     continue
                 for edge in list(state.in_edges(node)) + list(state.out_edges(node)):
                     memlet = edge.data
@@ -383,19 +384,6 @@ class PromoteConstantIndexAccess(ppl.Pass):
                 # canonical case -- and is NOT privatizable: promoting it
                 # would lose the cross-iteration dependency and silently drop
                 # every accumulation.
-                #
-                # KNOWN LATENT GAP: a non-transient slot that the body WRITES
-                # without an in-loop read still escapes -- e.g.
-                # ``for i: arr[5] = i`` on a non-transient ``arr``. The pass
-                # emits no epilogue writeback, so the in-loop writes land in
-                # the transient-scalar alias and never reach the caller's
-                # ``arr[5]``. The internal-only ``_not_live_out`` check
-                # below does not catch this. Adding a refusal here would
-                # break a number of existing PCIA tests that assert
-                # promotion fires on this shape without verifying the
-                # caller-visible final value -- the assertions only check a
-                # secondary output. Leaving as-is and TODO: either add an
-                # epilogue writeback or tighten those tests + refuse here.
                 if self._slot_has_in_body_rmw(loop, name, point):
                     continue
                 # The prologue-load rewrite is value-preserving only if no read of the

@@ -29,6 +29,7 @@ import dace
 from dace.config import set_temporary
 from dace.sdfg import nodes
 from dace.sdfg.state import ConditionalBlock, ControlFlowRegion, LoopRegion
+from dace.transformation.interstate.loop_to_map import LoopToMap
 from dace.transformation.passes.normalize_wcr import NormalizeWCR
 from tests.corpus import corpus_suite as CS
 from tests.sdfg.cfg_list_in_place_test import assert_tree_consistent
@@ -531,6 +532,27 @@ def test_a_fresh_map_parameter_avoids_a_loop_iterator_no_symbol_table_holds():
 
     assert '_nnr_i0' not in sdfg.symbols
     assert name != '_nnr_i0'
+
+
+def test_masked_row_reduction_under_outer_map_adds_each_row_once():
+    N = dace.symbol('N')
+
+    @dace.program
+    def kern(a: dace.float64[N, 4], b: dace.float64[N], s: dace.float64[N]):
+        for i in range(N):
+            b[i] = 1.0
+            for j in dace.map[0:4]:
+                if a[i, j] > 0.5:
+                    s[i] += a[i, j]
+
+    sdfg = kern.to_sdfg(simplify=True)
+    NormalizeWCR().apply_pass(sdfg, {})
+    sdfg.apply_transformations_repeated(LoopToMap)
+    res = NormalizeWCR().apply_pass(sdfg, {})
+    s = np.zeros(3)
+    sdfg(a=np.ones((3, 4)), b=np.zeros(3), s=s, N=3)
+    assert res is None
+    assert np.array_equal(s, [4.0, 4.0, 4.0])
 
 
 if __name__ == '__main__':

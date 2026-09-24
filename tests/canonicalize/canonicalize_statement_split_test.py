@@ -504,5 +504,25 @@ def test_split_maps_refuses_a_side_effecting_body():
     assert SplitStatements(split_maps=True).apply_pass(sdfg, {}) is None
 
 
+@pytest.mark.xfail(strict=True, reason="SplitStatements moves the a[i] write in a map body before the guard reading it")
+def test_map_body_guard_reads_element_before_it_is_zeroed():
+
+    @dace.program
+    def kern(a: dace.float64[N], b: dace.float64[N]):
+        for i in dace.map[0:N]:
+            c = a[i] > 0.5
+            a[i] = 0.0
+            if c:
+                b[i] = 1.0
+            else:
+                b[i] = 2.0
+
+    sdfg = canonicalize(kern.to_sdfg(simplify=True))
+    a, b = np.array([0.9, 0.1, 0.7]), np.zeros(3)
+    sdfg(a=a, b=b, N=3)
+    assert np.array_equal(a, [0.0, 0.0, 0.0])
+    assert np.array_equal(b, [1.0, 2.0, 1.0])
+
+
 if __name__ == '__main__':
     pytest.main([__file__, '-q'])

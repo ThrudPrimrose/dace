@@ -219,7 +219,8 @@ class NormalizeWCR(ppl.Pass):
         """Normalize a single write-only reduction output ``oc``. Returns True on rewrite."""
         inner = nsdfg.sdfg
         oc_desc = inner.arrays.get(oc)
-        if oc_desc is None:
+        # The rewrite forwards all of ``oc`` as the addend, so a one-element write must cover all of it.
+        if oc_desc is None or oc_desc.total_size != 1:
             return False
 
         # Fail-safe refuse: never apply the drop-WCR / whole-buffer ``_nnr_out`` rewrite to a
