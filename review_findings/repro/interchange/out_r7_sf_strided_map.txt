@@ -1,0 +1,6 @@
+map range: 1:N:2
+cut after the first body block: BinOp_18
+  MapFission.can_be_applied -> True on body blocks ['BinOp_18', 'for_19', 'assign_21_8']
+  MapFission.can_be_applied -> True on body blocks ['nested_sdfg_parent', 'nested_sdfg_parent_0']
+apply raised: ValueError Transformation cannot be applied on the given subgraph ("can_be_applied" failed)
+SDFG changed although nothing applied: True

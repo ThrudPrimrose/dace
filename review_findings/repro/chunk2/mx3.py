@@ -1,0 +1,40 @@
+import sys
+import numpy as np
+import dace
+from dace.transformation.passes.canonicalize.materialize_loop_exit_symbols import MaterializeLoopExitSymbols
+from harness import run_pass_checked, canon_prefix, run_until
+from dace.transformation.passes.canonicalize import canonicalize
+
+N = dace.symbol('N')
+
+
+@dace.program
+def post_update(a: dace.int64[N], b: dace.int64[2], f: dace.int64[1]):
+    k = 1
+    for i in range(N):
+        k = k * 2
+        a[i] = k
+    if f[0] > 0:
+        k = k + 5
+    b[0] = k
+    b[1] = k * 3
+
+
+mode = sys.argv[1]
+sdfg = post_update.to_sdfg(simplify=True)
+sdfg.name = f'mx3_{mode}'
+if mode == 'direct':
+    run_pass_checked(MaterializeLoopExitSymbols(), sdfg)
+elif mode == 'prefix':
+    run_until(sdfg, MaterializeLoopExitSymbols)
+    sdfg.save('mx2_prefix.sdfg')
+    run_pass_checked(MaterializeLoopExitSymbols(), sdfg)
+    sdfg.save('mx2_after.sdfg')
+else:
+    canonicalize(sdfg)
+sdfg.validate()
+n = 6
+a = np.zeros(n, dtype=np.int64)
+b = np.zeros(2, dtype=np.int64)
+sdfg(a=a, b=b, f=np.ones(1, dtype=np.int64), N=n)
+print('a', a, 'b', b, 'expected b', [2**n + 5, 3 * (2**n + 5)])

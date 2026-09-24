@@ -1,0 +1,7 @@
+/home/user/dace/dace/sdfg/state.py:1903: UserWarning: Using sets for connectors is discouraged as it leads to indeterministic behavior.
+  warnings.warn("Using sets for connectors is discouraged as it leads to indeterministic behavior.")
+applied: 1
+/home/user/dace/dace/codegen/common.py:213: UserWarning: Host C++ compiler c++ is GCC 13.3.0, whose auto-vectorizer mislowers a masked select and silently returns zeros for the upper half of each vector. Build with GCC 14 or newer, or add -fno-tree-vectorize to compiler.cpu.args.
+  warnings.warn(f'Host C++ compiler {executable} is GCC {".".join(str(v) for v in version)}, whose '
+reference: [3. 3.]
+interchanged: [1.43231882e-315 1.43231882e-315]

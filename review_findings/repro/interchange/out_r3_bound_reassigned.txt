@@ -1,0 +1,48 @@
+/home/user/dace/dace/sdfg/nodes.py:823: UserWarning: body maps to unused symbol(s): {'M'}
+  warnings.warn(f"{self.label} maps to unused symbol(s): {extra_symbols}")
+applied: 1
+/home/user/dace/dace/codegen/common.py:213: UserWarning: Host C++ compiler c++ is GCC 13.3.0, whose auto-vectorizer mislowers a masked select and silently returns zeros for the upper half of each vector. Build with GCC 14 or newer, or add -fno-tree-vectorize to compiler.cpu.args.
+  warnings.warn(f'Host C++ compiler {executable} is GCC {".".join(str(v) for v in version)}, whose '
+/home/user/dace/dace/sdfg/nodes.py:823: UserWarning: body maps to unused symbol(s): {'M'}
+  warnings.warn(f"{self.label} maps to unused symbol(s): {extra_symbols}")
+reference: [2. 2. 2.]
+Traceback (most recent call last):
+  File "/home/user/dace/dace/codegen/compiler.py", line 556, in run_cmake
+    _run_liveoutput(f"cmake --build . --config {Config.get('compiler', 'build_type')} --parallel {jobs}",
+  File "/home/user/dace/dace/codegen/compiler.py", line 1235, in _run_liveoutput
+    raise subprocess.CalledProcessError(process.returncode, command, output.getvalue())
+subprocess.CalledProcessError: Command 'cmake --build . --config Release --parallel 4' returned non-zero exit status 1.
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/tmp/claude-0/-home-user/1191ce82-d309-5728-89cd-bb12c458f12b/scratchpad/review/interchange/r3_bound_reassigned.py", line 50, in <module>
+    print('interchanged:', run(sdfg))
+                           ^^^^^^^^^
+  File "/tmp/claude-0/-home-user/1191ce82-d309-5728-89cd-bb12c458f12b/scratchpad/review/interchange/r3_bound_reassigned.py", line 47, in run
+    g(B=B, C=np.zeros(5), N=3, M=5)
+  File "/home/user/dace/dace/sdfg/sdfg.py", line 2988, in __call__
+    binaryobj = sdfg.compile()
+                ^^^^^^^^^^^^^^
+  File "/home/user/dace/dace/sdfg/sdfg.py", line 2912, in compile
+    shared_library = compiler.configure_and_compile(program_folder, sdfg.name, folder_mode=folder_mode)
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/user/dace/dace/codegen/compiler.py", line 658, in configure_and_compile
+    cmake_configure_and_build(program_folder=program_folder,
+  File "/home/user/dace/dace/codegen/compiler.py", line 791, in cmake_configure_and_build
+    configure_owned = run_cmake(cmake_command, build_folder, configure_key, jobs, output_stream)
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/user/dace/dace/codegen/compiler.py", line 565, in run_cmake
+    raise cgx.CompilationError('Compiler failure:\n' + ex.output)
+dace.codegen.exceptions.CompilationError: Compiler failure:
+[1/4] Building CXX object CMakeFiles/dacestub_bound_reassigned.dir/tools/dacestub.cpp.o
+[2/4] Linking CXX shared library libdacestub_bound_reassigned.so
+[3/4] Building CXX object CMakeFiles/bound_reassigned.dir/tmp/claude-0/-home-user/1191ce82-d309-5728-89cd-bb12c458f12b/scratchpad/review/interchange/.dacecache/bound_reassigned/src/cpu/bound_reassigned.cpp.o
+FAILED: [code=1] CMakeFiles/bound_reassigned.dir/tmp/claude-0/-home-user/1191ce82-d309-5728-89cd-bb12c458f12b/scratchpad/review/interchange/.dacecache/bound_reassigned/src/cpu/bound_reassigned.cpp.o
+/usr/bin/c++ -DDACE_BINARY_DIR=\"/tmp/claude-0/-home-user/1191ce82-d309-5728-89cd-bb12c458f12b/scratchpad/review/interchange/.dacecache/bound_reassigned/build\" -Dbound_reassigned_EXPORTS -I/home/user/dace/dace/codegen/../runtime/include -Wall -Wextra -march=native -fno-math-errno -fno-trapping-math -fno-signed-zeros -freciprocal-math -Wno-unused-parameter -Wno-unused-label  -O3 -DNDEBUG -std=c++20 -fPIC -fopenmp -I/dev/shm/dace_build_cache_root/pch/61b7bac0c1a76ee0 -include dace_prewarm.h -MD -MT CMakeFiles/bound_reassigned.dir/tmp/claude-0/-home-user/1191ce82-d309-5728-89cd-bb12c458f12b/scratchpad/review/interchange/.dacecache/bound_reassigned/src/cpu/bound_reassigned.cpp.o -MF CMakeFiles/bound_reassigned.dir/tmp/claude-0/-home-user/1191ce82-d309-5728-89cd-bb12c458f12b/scratchpad/review/interchange/.dacecache/bound_reassigned/src/cpu/bound_reassigned.cpp.o.d -o CMakeFiles/bound_reassigned.dir/tmp/claude-0/-home-user/1191ce82-d309-5728-89cd-bb12c458f12b/scratchpad/review/interchange/.dacecache/bound_reassigned/src/cpu/bound_reassigned.cpp.o -c /tmp/claude-0/-home-user/1191ce82-d309-5728-89cd-bb12c458f12b/scratchpad/review/interchange/.dacecache/bound_reassigned/src/cpu/bound_reassigned.cpp
+/tmp/claude-0/-home-user/1191ce82-d309-5728-89cd-bb12c458f12b/scratchpad/review/interchange/.dacecache/bound_reassigned/src/cpu/bound_reassigned.cpp: In function ‘void body_1_0_2(bound_reassigned_state_t*, double*)’:
+/tmp/claude-0/-home-user/1191ce82-d309-5728-89cd-bb12c458f12b/scratchpad/review/interchange/.dacecache/bound_reassigned/src/cpu/bound_reassigned.cpp:17:5: error: ‘M’ was not declared in this scope
+   17 |     M = 2;
+      |     ^
+ninja: build stopped: subcommand failed.
+

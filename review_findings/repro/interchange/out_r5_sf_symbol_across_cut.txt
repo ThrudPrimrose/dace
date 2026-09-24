@@ -1,0 +1,4 @@
+/home/user/dace/dace/sdfg/state.py:1968: UserWarning: Using sets for connectors is discouraged as it leads to indeterministic behavior.
+  warnings.warn("Using sets for connectors is discouraged as it leads to indeterministic behavior.")
+apply raised: ValueError Transformation cannot be applied on the given subgraph ("can_be_applied" failed)
+SDFG changed although nothing applied: True
