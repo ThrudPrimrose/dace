@@ -117,7 +117,11 @@ def shared_carrier_connectors(state: SDFGState, keep: nodes.NestedSDFG,
             return None  # something else observes it: cannot be made internal
         if any(oe.dst is not drop for oe in state.out_edges(carrier)):
             return None
-        if any(ie.src is not keep for ie in state.in_edges(carrier)):
+        writes = state.in_edges(carrier)
+        if any(ie.src is not keep for ie in writes) or len(writes) != 1 or writes[0].data.subset != e.data.subset:
+            return None  # drop must read exactly the region keep writes, through the same layout
+        kdesc, ddesc = keep.sdfg.arrays[produced[name]], drop.sdfg.arrays[e.dst_conn]
+        if not kdesc.is_equivalent(ddesc) or (kdesc.strides, kdesc.offset) != (ddesc.strides, ddesc.offset):
             return None
         forward[e.dst_conn] = (produced[name], carrier)
     return forward
@@ -258,13 +262,18 @@ class NormalizeMapBody(ppl.Pass):
 
     def _merge_siblings(self, state: SDFGState, siblings: List[nodes.NestedSDFG]) -> bool:
         """Merge sibling NestedSDFGs in ``state`` into ``siblings[0]`` by
-        sequencing their control-flow graphs. Returns True on success."""
+        sequencing their control-flow graphs. Returns True if any sibling was merged."""
         keep = siblings[0]
         base = keep.sdfg
+        merged_any = False
         for drop in siblings[1:]:
+            # Refuse before mutating: symbols are not renamed, so one inner name keeps one binding.
+            if any(str(keep.symbol_mapping.get(k, v)) != str(v) for k, v in drop.symbol_mapping.items()):
+                break
             carried = shared_carrier_connectors(state, keep, drop)
             if carried is None:
-                return False
+                break
+            merged_any = True
             tail = copy.deepcopy(drop.sdfg)
             # Rename tail's data that collides with any base identifier, tracking how
             # drop's connectors were renamed so we can rewire the outer edges. DaCe forbids
@@ -345,6 +354,9 @@ class NormalizeMapBody(ppl.Pass):
             for k, v in drop.symbol_mapping.items():
                 keep.symbol_mapping.setdefault(k, v)
             state.remove_node(drop)
+
+        if not merged_any:
+            return False
 
         # Fold redundant boundary connectors / symbol-mapping aliases the merge
         # introduced, so same-condition guards from independent-but-identical
