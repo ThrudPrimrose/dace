@@ -120,5 +120,21 @@ def test_strided_negative_loop_value_preserving(n):
     assert np.allclose(got, ref), f'stride -2 rewrite changed the touched indices for N={n}'
 
 
+def test_empty_stride_minus_two_range_stays_empty():
+    M = dace.symbol('M')
+
+    @dace.program
+    def prog(A: dace.float64[8]):
+        for i in range(N, M, -2):
+            A[i] = 1.0
+
+    sdfg = prog.to_sdfg(simplify=True)
+    assert NormalizeNegativeStride().apply_pass(sdfg, {}) == 1
+    A = np.zeros(8)
+    sdfg(A=A, N=5, M=5)
+    assert loop_analysis.get_loop_stride(_loops(sdfg)[0]) == 1
+    assert not A.any()
+
+
 if __name__ == '__main__':
     pytest.main([__file__, '-v'])

@@ -243,5 +243,21 @@ def test_a_loop_left_by_break_keeps_its_counted_exit_value():
     assert out[0] == 3, out
 
 
+def test_exit_value_of_an_empty_strided_loop_is_its_seed():
+
+    @dace.program
+    def prog(out: dace.int64[1]):
+        k = 0
+        for i in range(0, N, 2):
+            k = k + 3
+        out[0] = k
+
+    sdfg = prog.to_sdfg(simplify=True)
+    assert MaterializeLoopExitSymbols().apply_pass(sdfg, {}) == 1
+    out = np.ones(1, dtype=np.int64)
+    sdfg(out=out, N=0)
+    assert _has_loop_exit_sym(sdfg, 'k') and out[0] == 0
+
+
 if __name__ == '__main__':
     pytest.main([__file__, '-v'])
