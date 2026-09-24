@@ -121,12 +121,15 @@ from collections import Counter
 from dataclasses import dataclass
 from typing import Any
 
+import sympy
+
 from dace import SDFG, Memlet, dtypes, properties, symbolic
 from dace import data as dt
 from dace.sdfg import nodes
 from dace.sdfg.state import ConditionalBlock, LoopRegion, SDFGState
 from dace.transformation import pass_pipeline as ppl, transformation
 from dace.transformation.passes.analysis import loop_analysis
+from dace.transformation.passes.vectorization.utils.injectivity import write_subset_is_injective
 
 
 def states_touch_view(states, arrays: dict) -> bool:
@@ -485,7 +488,7 @@ def subset_point(subset) -> list | None:
     return point
 
 
-def access_offset(read_subset, write_subset) -> int | None:
+def access_offset(read_subset, write_subset, loop_var: str) -> int | None:
     """Sign of ``read - write`` as a constant iteration offset, or ``None`` when undecidable.
 
     Positive means the read is AHEAD of the write -- it wants an element a LATER iteration
@@ -509,7 +512,11 @@ def access_offset(read_subset, write_subset) -> int | None:
         if not getattr(diff, 'is_Integer', False):
             return None
         if diff != 0:
-            return 1 if diff > 0 else -1
+            # Direction in ITERATION space: a store index falling in ``loop_var`` flips the sign.
+            slope = sympy.diff(w, next((s for s in w.free_symbols if str(s) == loop_var), symbolic.symbol(loop_var)))
+            if not slope.is_Integer or slope == 0:
+                return None
+            return 1 if diff * slope > 0 else -1
     return 0
 
 
@@ -673,7 +680,7 @@ def iteration_distinct(subsets, loop_var: str) -> bool:
     compares EQUAL to its own store, which is precisely the input that rule reads as "same
     element, same iteration" (``s = s + a[i]; b[i] = s`` is the shape).
     """
-    return bool(subsets) and all(sub is not None and loop_var in (str(s) for s in sub.free_symbols) for sub in subsets)
+    return bool(subsets) and all(sub is not None and write_subset_is_injective(sub, [loop_var]) for sub in subsets)
 
 
 def carries_across_iterations(body, name: str, in_names: dict[str, None], cone=None) -> bool:
@@ -695,7 +702,7 @@ def carries_across_iterations(body, name: str, in_names: dict[str, None], cone=N
     if not iteration_distinct(stores, body.loop_variable):
         return True
     for state, node, edge in read_cone(body, name, in_names, cone):
-        if node.data == name and {access_offset(edge_subset(edge, name), w) for w in stores} != {0}:
+        if node.data == name and {access_offset(edge_subset(edge, name), w, body.loop_variable) for w in stores} != {0}:
             return True
     return False
 
@@ -781,7 +788,7 @@ def split_order(body, in_names: dict[str, None], rmw: list[str], groups: list[di
                     if not iteration_distinct(stores, body.loop_variable):
                         return None
                 read = edge_subset(edge, name)
-                offsets = {access_offset(read, w) for w in stores}
+                offsets = {access_offset(read, w, body.loop_variable) for w in stores}
                 if len(offsets) != 1 or None in offsets:
                     return None
                 offset = offsets.pop()

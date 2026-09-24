@@ -672,5 +672,36 @@ def test_split_loops_knob_off_leaves_the_loop_alone():
     assert sdfg.hash_sdfg() == before
 
 
+def test_reversed_index_read_of_last_iterations_store_runs_writer_loop_first():
+
+    @dace.program
+    def rev(a: dace.float64[10], b: dace.float64[10]):
+        for i in range(1, 8):
+            a[8 - i] = i
+            b[i] = a[9 - i]
+
+    sdfg = rev.to_sdfg(simplify=True)
+    _split(sdfg)
+    a, b = np.zeros(10), np.zeros(10)
+    sdfg(a=a, b=b)
+    assert len(_loops(sdfg)) == 2
+    assert np.array_equal(b, [0, 0, 1, 2, 3, 4, 5, 6, 0, 0])
+
+
+def test_store_shared_by_two_iterations_is_not_split():
+
+    @dace.program
+    def half(s: dace.float64[4], b: dace.float64[8]):
+        for i in range(8):
+            s[i // 2] = s[i // 2] + i
+            b[i] = s[i // 2]
+
+    sdfg = half.to_sdfg(simplify=True)
+    s, b = np.zeros(4), np.zeros(8)
+    assert _refuses(sdfg)
+    sdfg(s=s, b=b)
+    assert np.array_equal(b, [0, 1, 2, 5, 4, 9, 6, 13])
+
+
 if __name__ == '__main__':
     pytest.main([__file__, '-q'])
