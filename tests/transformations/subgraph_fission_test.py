@@ -1,5 +1,6 @@
 # Copyright 2019-2026 ETH Zurich and the DaCe authors. All rights reserved.
 import copy
+import json
 
 import numpy as np
 import pytest
@@ -14,6 +15,16 @@ N = dace.symbol('N')
 @dace.program
 def long_body(a: dace.float64[N], b: dace.float64[N], c: dace.float64[N]):
     for i in dace.map[0:N]:
+        t = a[i] * 2.0
+        for k in range(3):
+            t = t + a[i]
+        b[i] = t
+        c[i] = b[i] + t
+
+
+@dace.program
+def strided_body(a: dace.float64[N], b: dace.float64[N], c: dace.float64[N]):
+    for i in dace.map[1:N:2]:
         t = a[i] * 2.0
         for k in range(3):
             t = t + a[i]
@@ -66,3 +77,28 @@ def test_a_cut_naming_no_block_is_refused():
     sdfg = long_body.to_sdfg(simplify=True)
 
     assert sdfg.apply_transformations(SubgraphFission, options={'cut': 'no_such_block'}) == 0
+
+
+def test_a_symbol_assigned_before_the_cut_is_refused_and_changes_nothing():
+    sdfg = long_body.to_sdfg(simplify=True)
+    state, entry, nsdfg = body_of(sdfg)
+    first = list(sdutil.dfs_topological_sort(nsdfg.sdfg))[0]
+    nsdfg.sdfg.add_symbol('k', dace.int64)
+    nsdfg.sdfg.out_edges(first)[0].data.assignments['k'] = '3'
+    before = json.dumps(sdfg.to_json(), default=str)
+
+    assert fission_at(sdfg, 1) == 0
+
+    assert json.dumps(sdfg.to_json(), default=str) == before
+
+
+def test_a_strided_map_splits_into_two_maps_inside_its_nested_sdfg():
+    sdfg = strided_body.to_sdfg(simplify=True)
+    reference = copy.deepcopy(sdfg)
+
+    assert fission_at(sdfg, 0) == 1
+
+    (nsdfg, ) = [n for n in sdfg.start_block.nodes() if isinstance(n, nodes.NestedSDFG)]
+    assert len([n for s in nsdfg.sdfg.states() for n in s.nodes() if isinstance(n, nodes.MapEntry)]) == 2
+    got, want = run(sdfg), run(reference)
+    assert np.allclose(got['c'], want['c'], rtol=1e-14, atol=0)

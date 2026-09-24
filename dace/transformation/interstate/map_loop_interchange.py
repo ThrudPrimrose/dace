@@ -1,17 +1,28 @@
 # Copyright 2019-2026 ETH Zurich and the DaCe authors. All rights reserved.
 """Move a loop that is a map's whole body outside the map: the inverse of ``MoveLoopIntoMap``."""
 
-from typing import Optional, Set
+from typing import Optional
 
-from dace import sdfg as sd, symbolic
+from dace import data as dt, sdfg as sd, symbolic
 from dace.sdfg import nodes, utils as sdutil
 from dace.sdfg import state as cf
 from dace.transformation import transformation
-from dace.transformation.passes import move_if_into_loop
+from dace.transformation.passes.analysis import analysis
 
 
-def free_names(expression: str) -> Set[str]:
-    return {str(s) for s in symbolic.pystr_to_symbolic(expression).free_symbols}
+def reads_unwritten(state: sd.SDFGState, name: str, desc: dt.Data) -> bool:
+    """Whether ``state`` may read an element of ``name`` that no write into the same access node covers."""
+    for node in [n for n in state.data_nodes() if n.data == name]:
+        writes = [e for e in state.in_edges(node) if not e.data.dynamic and e.data.wcr is None]
+        reads = [e.data.get_src_subset(e, state) for e in state.out_edges(node) if not e.data.is_empty()]
+        reads += [e.data.get_dst_subset(e, state) for e in state.in_edges(node) if e.data.wcr is not None]
+        for subset in reads:
+            if not any(
+                    analysis.writes_whole_array(state, w, desc) or
+                (isinstance(w.src, (nodes.Tasklet, nodes.AccessNode)) and w.data.get_dst_subset(w, state) == subset)
+                    for w in writes):
+                return True
+    return False
 
 
 def carried_across_iterations(loop: cf.LoopRegion, body: sd.SDFG) -> Optional[str]:
@@ -20,13 +31,31 @@ def carried_across_iterations(loop: cf.LoopRegion, body: sd.SDFG) -> Optional[st
     Once the loop is outside the map, every iteration calls ``body`` afresh, so its transients and symbols start over.
     """
     assigned = {name for edge in loop.all_interstate_edges() for name in edge.data.assignments}
-    for edge in loop.all_interstate_edges():
-        for name, rhs in edge.data.assignments.items():
-            if free_names(rhs) & assigned:
-                return f'symbol {name} is carried across iterations'
+    inner = [r for r in loop.all_control_flow_regions() if r is not loop]
+    assigned |= {r.loop_variable for r in inner if isinstance(r, cf.LoopRegion)}
+    if any(edge.data.assignments for r in inner for edge in r.edges()):
+        return 'a branch or an inner loop assigns a symbol'
+    header = [c for c in (loop.init_statement, loop.loop_condition, loop.update_statement) if c is not None]
+    reassigned = sorted(assigned & {str(s) for code in header for s in code.get_free_symbols()})
+    if reassigned:
+        return f'the loop bound {reassigned[0]} is reassigned inside the loop'
+    # only a straight line of blocks assigns a symbol on every path to the blocks after the assignment
+    straight = all(loop.in_degree(b) <= 1 and loop.out_degree(b) <= 1 for b in loop.nodes())
+    defined: set[str] = set()
+    for block in sdutil.dfs_topological_sort(loop):
+        edges = loop.out_edges(block)
+        reads = {str(s) for s in block.used_symbols(all_symbols=True)}
+        reads |= {str(s) for e in edges for s in e.data.read_symbols()}
+        carried = sorted((reads - defined) & assigned)
+        if carried:
+            return f'symbol {carried[0]} is carried across iterations'
+        if straight:
+            defined |= {name for edge in edges for name in edge.data.assignments}
+    edge_reads = {str(s) for edge in loop.all_interstate_edges() for s in edge.data.read_symbols()}
     for name, desc in body.arrays.items():
         states = [s for s in loop.all_states() if any(n.data == name for n in s.data_nodes())]
-        if desc.transient and states and (len(states) > 1 or name in move_if_into_loop.upward_exposed_reads(states[0])):
+        if desc.transient and states and (len(states) > 1 or name in edge_reads
+                                          or reads_unwritten(states[0], name, desc)):
             return f'transient {name} is carried across iterations'
     return None
 
@@ -55,14 +84,21 @@ class MapLoopInterchange(transformation.SingleStateTransformation):
         if len(blocks) != 1 or not isinstance(blocks[0], cf.LoopRegion):
             return 'the body is not exactly one loop'
         loop = blocks[0]
-        if any(e.dst is not body for e in state.out_edges(entry)):
+        exit_node = state.exit_node(entry)
+        if any(e.dst is not body for e in state.out_edges(entry)) or any(e.src is not body
+                                                                         for e in state.in_edges(exit_node)):
             return 'the map holds more than the nested SDFG'
         if any(not isinstance(n, nodes.AccessNode) for n in state.scope_children()[None]
-               if n is not entry and n is not state.exit_node(entry)):
+               if n is not entry and n is not exit_node):
             return 'the state holds more than the map; the loop would repeat it'
+        if any({e.src, e.dst}.isdisjoint({entry, exit_node}) for e in state.edges() if body not in (e.src, e.dst)):
+            return 'the state holds a copy outside the map; the loop would repeat it'
         var = loop.loop_variable
         outer = state.sdfg
-        if var in entry.map.params or var in outer.symbols or var in outer.arrays:
+        taken = set(outer.symbols) | set(outer.arrays) | outer.free_symbols | outer.used_symbols(all_symbols=True)
+        taken |= {name for edge in outer.all_interstate_edges() for name in edge.data.assignments}
+        taken |= {r.loop_variable for r in outer.all_control_flow_regions() if isinstance(r, cf.LoopRegion)}
+        if var in entry.map.params or var in taken:
             return f'the loop variable {var} is already defined outside the map'
         statements = [c for c in (loop.init_statement, loop.loop_condition, loop.update_statement) if c is not None]
         for name in sorted({str(s) for code in statements for s in code.get_free_symbols()} - {var}):

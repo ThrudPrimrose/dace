@@ -1,6 +1,7 @@
 # Copyright 2019-2026 ETH Zurich and the DaCe authors. All rights reserved.
 """Split a map whose body is a nested SDFG into two maps at a chosen block of that body."""
 
+import copy
 from typing import Optional
 
 from dace import properties, sdfg as sd
@@ -28,6 +29,26 @@ def drop_uninitialized_inputs(body: sd.SDFG) -> None:
                     if state.degree(edge.src) == 0:
                         state.remove_node(edge.src)
             written.update(edge.data.data for edge in state.out_edges(nest))
+
+
+def split(sdfg: sd.SDFG, entry: nodes.MapEntry, nsdfg: nodes.NestedSDFG, cut: cf.ControlFlowBlock) -> bool:
+    """Split the map at ``entry`` after ``cut``; ``False`` (with the body left nested in halves) if MapFission refuses."""
+    body = nsdfg.sdfg
+    blocks = list(sdutil.dfs_topological_sort(body))
+    index = blocks.index(cut)
+    for group in (blocks[:index + 1], blocks[index + 1:]):
+        if len(group) == 1 and isinstance(group[0], sd.SDFGState):
+            # nest_sdfg_subgraph leaves a lone state in place, and MapFission would split it per component
+            group = [group[0], body.add_state_after(group[0])]
+        helpers.nest_sdfg_subgraph(body, gr.SubgraphView(body, group))
+    drop_uninitialized_inputs(body)
+    if not map_fission.MapFission.can_be_applied_to(sdfg, expr_index=1, map_entry=entry, nested_sdfg=nsdfg):
+        return False
+    # MapFission moves the two maps inside the nested SDFG; inlining it, when legal, leaves them in two states
+    map_fission.MapFission.apply_to(sdfg, expr_index=1, map_entry=entry, nested_sdfg=nsdfg)
+    if multistate_inline.InlineMultistateSDFG.can_be_applied_to(sdfg, nested_sdfg=nsdfg):
+        multistate_inline.InlineMultistateSDFG.apply_to(sdfg, nested_sdfg=nsdfg)
+    return True
 
 
 @properties.make_properties
@@ -63,27 +84,16 @@ class SubgraphFission(transformation.SingleStateTransformation):
             return False
         if not outs[0].data.is_unconditional() or outs[0].data.assignments:
             return False
-        # MapFission judges the unsplit body at least as strictly as the split one: nesting the halves hides their
-        # interstate assignments from the map parameters it refuses
-        return map_fission.MapFission.can_be_applied_to(sdfg,
-                                                        expr_index=1,
-                                                        map_entry=self.map_entry,
-                                                        nested_sdfg=self.nested_sdfg)
+        # nesting the halves rewrites the body before MapFission judges it, so the whole rewrite runs on a copy
+        twin = copy.deepcopy(sdfg)
+        twin_state = list(twin.all_states())[list(sdfg.all_states()).index(graph)]
+        twin_entry = twin_state.node(graph.node_id(self.map_entry))
+        twin_nsdfg = twin_state.node(graph.node_id(self.nested_sdfg))
+        return split(twin, twin_entry, twin_nsdfg, twin_nsdfg.sdfg.node(body.node_id(cut)))
 
     def apply(self, graph: sd.SDFGState, sdfg: sd.SDFG):
-        entry, nsdfg, cut = self.map_entry, self.nested_sdfg, self.cut_block()
-        body = nsdfg.sdfg
-        blocks = list(sdutil.dfs_topological_sort(body))
-        index = blocks.index(cut)
-        for group in (blocks[:index + 1], blocks[index + 1:]):
-            if len(group) == 1 and isinstance(group[0], sd.SDFGState):
-                # nest_sdfg_subgraph leaves a lone state in place, and MapFission would split it per component
-                group = [group[0], body.add_state_after(group[0])]
-            helpers.nest_sdfg_subgraph(body, gr.SubgraphView(body, group))
-        drop_uninitialized_inputs(body)
-        # MapFission moves the two maps inside the nested SDFG; inlining it leaves them in two states
-        map_fission.MapFission.apply_to(sdfg, expr_index=1, map_entry=entry, nested_sdfg=nsdfg)
-        multistate_inline.InlineMultistateSDFG.apply_to(sdfg, nested_sdfg=nsdfg)
+        split_done = split(sdfg, self.map_entry, self.nested_sdfg, self.cut_block())
+        assert split_done, 'can_be_applied ran the same split on a copy'
         root = sdfg.root_sdfg
         sdutil.set_nested_sdfg_parent_references(root)
         root.reset_cfg_list()
