@@ -518,3 +518,63 @@ def test_merging_conditional_block_siblings_keeps_the_cfg_list_of_a_fresh_reset(
     a, b = np.zeros(8), np.zeros(8)
     sdfg(X=x, O0_0=a, O0_1=b, N=8)
     assert np.allclose(a, x + 1.0) and np.allclose(b, x - 1.0)
+
+
+def body(ins: list[str], size: int = 1, code: str = 'o = 0') -> dace.SDFG:
+    """Nested body: one tasklet reading ``ins[0]`` each, writing ``y[0]`` of a ``y[size]`` array."""
+    sd = dace.SDFG('body')
+    st = sd.add_state()
+    t = st.add_tasklet('t', {f'v{n}' for n in ins}, {'o'}, code)
+    for n in ins:
+        sd.add_array(n, [1], dace.float64)
+        st.add_edge(st.add_read(n), None, t, f'v{n}', dace.Memlet(f'{n}[0]'))
+    sd.add_array('y', [size], dace.float64)
+    st.add_edge(t, 'o', st.add_write('y'), None, dace.Memlet('y[0]'))
+    return sd
+
+
+def test_a_consumer_reading_part_of_its_producers_write_is_not_merged():
+    sdfg = dace.SDFG('carrier_subset')
+    sdfg.add_array('B', [1], dace.float64)
+    sdfg.add_transient('tmp', [2], dace.float64)
+    st = sdfg.add_state()
+    me, mx = st.add_map('m', dict(i='0:1'))
+    producer, consumer = st.add_nested_sdfg(body([], 2), {}, {'y'}), st.add_nested_sdfg(body(['x']), {'x'}, {'y'})
+    st.add_nedge(me, producer, dace.Memlet())
+    tmp = st.add_access('tmp')
+    st.add_edge(producer, 'y', tmp, None, dace.Memlet('tmp[0:2]'))
+    st.add_edge(tmp, None, consumer, 'x', dace.Memlet('tmp[1]'))
+    st.add_memlet_path(consumer, mx, st.add_write('B'), src_conn='y', memlet=dace.Memlet('B[0]'))
+    before = sdfg.to_json()
+    assert NormalizeMapBody().apply_pass(sdfg, {}) is None
+    assert sdfg.to_json() == before
+
+
+def test_siblings_binding_one_inner_symbol_differently_are_not_merged():
+    sdfg = dace.SDFG('symbol_conflict')
+    sdfg.add_array('B', [2], dace.float64)
+    st = sdfg.add_state()
+    me, mx = st.add_map('m', dict(i='0:1'))
+    for j in range(2):
+        inner = body([], code='o = k')
+        inner.add_symbol('k', dace.int64)
+        node = st.add_nested_sdfg(inner, {}, {'y'}, symbol_mapping={'k': f'i + {j}'})
+        st.add_nedge(me, node, dace.Memlet())
+        st.add_memlet_path(node, mx, st.add_write('B'), src_conn='y', memlet=dace.Memlet(f'B[{j}]'))
+    before = sdfg.to_json()
+    assert NormalizeMapBody().apply_pass(sdfg, {}) is None
+    assert sdfg.to_json() == before
+
+
+def test_a_merge_stopped_by_a_refused_sibling_reports_the_change():
+    sdfg = dace.SDFG('partial_refusal')
+    for name in 'XYAC':
+        sdfg.add_array(name, [1], dace.float64)
+    st = sdfg.add_state()
+    me, mx = st.add_map('m', dict(i='0:1'))
+    for src, dst in zip('XAA', 'YCX'):  # the third writes what the first reads: refused
+        node = st.add_nested_sdfg(body(['x']), {'x'}, {'y'})
+        st.add_memlet_path(st.add_read(src), me, node, dst_conn='x', memlet=dace.Memlet(f'{src}[i]'))
+        st.add_memlet_path(node, mx, st.add_write(dst), src_conn='y', memlet=dace.Memlet(f'{dst}[i]'))
+    assert NormalizeMapBody().apply_pass(sdfg, {}) == 1
+    assert sum(isinstance(n, nodes.NestedSDFG) for n in st.nodes()) == 2
