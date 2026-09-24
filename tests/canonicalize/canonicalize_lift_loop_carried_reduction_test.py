@@ -318,3 +318,41 @@ def test_contour_pattern_indexed_write_is_injective_not_reduction():
 
 if __name__ == '__main__':
     pytest.main([__file__, '-v'])
+
+
+@dace.program
+def _partial_sum_also_stored(P: dace.float64[4], Q: dace.float64[4], X: dace.float64[3, 4]):
+    for k in range(3):
+        for i in dace.map[0:4]:
+            t = P[i] + X[k, i]
+            P[i] = t
+            Q[i] = t
+
+
+def test_partial_sum_with_a_second_reader_is_not_lifted():
+    sdfg = _partial_sum_also_stored.to_sdfg(simplify=True)
+    P, Q = np.ones(4), np.zeros(4)
+    lifted = _apply(sdfg)
+    sdfg(P=P, Q=Q, X=np.ones((3, 4)))
+    assert lifted == 0
+    assert np.allclose(Q, 4.0)
+
+
+@dace.program
+def _increment_reads_accumulator(P: dace.float64[4], X: dace.float64[3, 4]):
+    for k in range(3):
+        for i in dace.map[0:4]:
+            with dace.tasklet:
+                p << P[i]
+                x << X[k, i]
+                o >> P[i]
+                o = p + p * x
+
+
+def test_increment_reading_the_accumulator_is_not_lifted():
+    sdfg = _increment_reads_accumulator.to_sdfg(simplify=True)
+    P = np.ones(4)
+    lifted = _apply(sdfg)
+    sdfg(P=P, X=np.ones((3, 4)))
+    assert lifted == 0
+    assert np.allclose(P, 8.0)

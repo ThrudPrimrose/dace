@@ -182,8 +182,8 @@ def _trace_to_reduction(st: SDFGState, mx_in) -> Optional[nodes.Tasklet]:
         return None
     transient = ins[0].src
     producers = st.in_edges(transient)
-    if len(producers) != 1 or not isinstance(producers[0].src, nodes.Tasklet):
-        return None
+    if len(producers) != 1 or not isinstance(producers[0].src, nodes.Tasklet) or st.out_degree(transient) != 1:
+        return None  # another reader of the partial sum would lose the accumulator
     red = producers[0].src
     return red if _reduction_operands(red) is not None else None
 
@@ -326,6 +326,9 @@ class LiftLoopCarriedReduction(ppl.Pass):
             return None
         entry_out = acc_edges[0]
         acc_conn = entry_out.dst_conn
+        # ``o = p + p * x`` reads the accumulator in the increment: a recurrence, not a reduction.
+        if any(isinstance(n, ast.Name) and n.id == acc_conn for n in ast.walk(_increment_ast(tasklet, acc_conn))):
+            return None
         # Intra-map purity: the map-entry read feeding the accumulator element must be
         # consumed ONLY by this accumulator operand. If that map-entry-out connector fans
         # out to any other tasklet inside the map, A[write_subset] also forms the increment
