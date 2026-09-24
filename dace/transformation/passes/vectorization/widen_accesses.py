@@ -48,7 +48,8 @@ from dace.transformation.passes.vectorization.utils.pass_invariants import (asse
                                                                             no_memlet_dim_mismatch)
 from dace.transformation.passes.vectorization.utils.subsets import an_side_subset
 from dace.transformation.passes.vectorization.utils.tile_access import (PerDimKind, build_symbol_definition_map,
-                                                                        classify_tile_access, data_is_lane_indexed)
+                                                                        classify_tile_access, data_is_lane_indexed,
+                                                                        resolve_index_expr)
 from dace.ordered import OrderedSet
 
 
@@ -150,7 +151,7 @@ def emit_per_lane_symbol_fanout(
                     # Mask still gates the SCATTER write; safe-read only.
                     shifted = sympy.Min(shifted, iter_var_ubs[iv])
                 repl[symbolic.symbol(iv)] = shifted
-            iedge.data.assignments[plane] = str(rhs_sym.xreplace(repl))
+            iedge.data.assignments[plane] = symbolic.symstr(rhs_sym.xreplace(repl), frozenset(sdfg.arrays))
     return per_lane_syms
 
 
@@ -303,9 +304,15 @@ class WidenAccesses(ppl.Pass):
         # Per-dim classification (needs inner SDFG context); skip GATHER dims
         # (begin is an iter-var array subscript).
         per_dim_kinds = None
+        sym_defs: dict[str, Any] = {}
         if inner_sdfg is not None:
             try:
-                record = classify_tile_access(sub, iter_vars=iter_vars, inner_sdfg=inner_sdfg, state=state)
+                sym_defs = build_symbol_definition_map(inner_sdfg, state)
+                record = classify_tile_access(sub,
+                                              iter_vars=iter_vars,
+                                              inner_sdfg=inner_sdfg,
+                                              state=state,
+                                              sym_defs=sym_defs)
                 per_dim_kinds = record.per_dim_kind
             except Exception:  # noqa: BLE001
                 per_dim_kinds = None
@@ -318,8 +325,10 @@ class WidenAccesses(ppl.Pass):
                 is_single = False
             if not is_single:
                 continue
+            # Resolve promoted index symbols (``off_plus_i = i + off[0]``) as the classifier does.
+            index = resolve_index_expr(beg, inner_sdfg, _defs=sym_defs) if sym_defs else beg
             try:
-                beg_syms = dace.symbolic.SymExpr(str(beg)).free_symbols
+                beg_syms = dace.symbolic.SymExpr(str(index)).free_symbols
             except Exception:  # noqa: BLE001
                 beg_syms = set()
             dominating_k = None
@@ -333,7 +342,7 @@ class WidenAccesses(ppl.Pass):
             if per_dim_kinds is not None and d < len(per_dim_kinds) and per_dim_kinds[d] == PerDimKind.GATHER:
                 continue
             w = widths[dominating_k]
-            lane_stride = self._lane_stride(beg, iter_vars[dominating_k])
+            lane_stride = self._lane_stride(index, iter_vars[dominating_k])
             if lane_stride is None:
                 new_end, new_step = dace.symbolic.pystr_to_symbolic(f"({beg}) + {w} - 1"), step
             else:
@@ -709,20 +718,20 @@ class WidenAccesses(ppl.Pass):
         return False
 
     @staticmethod
-    def _unwidenable_lane_dep_error(name: str, desc: dd.Data) -> NotImplementedError:
+    def _unwidenable_lane_dep_error(name: str, desc: dd.Data) -> VectorizeUnsupported:
         """Build the refusal for a lane-dependent transient we cannot widen.
 
         A lane-dependent transient must become a per-lane tile of shape ``widths``,
         which only ``Scalar``/length-1 buffers support. A genuine multi-element
         per-lane buffer (e.g. a 2-element sliding window ``tmp[0:2] = a[i:i+2]``)
         would need a ``(W, ...)`` widening the descent does not implement. Refuse
-        loudly with ``NotImplementedError`` rather than silently leaving it
+        loudly with ``VectorizeUnsupported`` rather than silently leaving it
         under-widened (which the post-widen invariant would later flag as a broken
         invariant instead of an honest unsupported-pattern refusal).
         """
-        return NotImplementedError(f"WidenAccesses: lane-dependent transient '{name}' has non-scalar shape "
-                                   f"{tuple(desc.shape)}; widening a multi-element per-lane buffer to (W, ...) is "
-                                   f"unsupported. Refusing rather than emitting an under-widened tile.")
+        return VectorizeUnsupported(f"WidenAccesses: lane-dependent transient '{name}' has non-scalar shape "
+                                    f"{tuple(desc.shape)}; widening a multi-element per-lane buffer to (W, ...) is "
+                                    f"unsupported. Refusing rather than emitting an under-widened tile.")
 
     # Step 5: seed per-lane symbols for Bypass-form gathers
     def _seed_per_lane_symbols(self,

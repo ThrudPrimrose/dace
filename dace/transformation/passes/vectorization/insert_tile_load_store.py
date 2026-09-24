@@ -638,6 +638,11 @@ class InsertTileLoadStore(ppl.Pass):
                     staged += 1
                     continue
                 # Structured tile load: LINEAR / AFFINE / REPLICATE / MODULAR (possibly mixed with CONSTANT).
+                # A lane-varying dim left one element wide would load lane 0's element into every lane.
+                s_sub = sgroup[0][1]
+                if s_sub is not None and any(kind not in (PerDimKind.CONSTANT, PerDimKind.GATHER) and size == 1
+                                             for kind, size in zip(s_record.per_dim_kind, s_sub.size())):
+                    raise VectorizeUnsupported(f"lane-varying read {an.data}[{s_sub}] was not widened to a tile")
                 src_subset_memlet = Memlet.from_memlet(s_edges[0].data)
                 # Pass src strides so the diagonal-as-affine path can combine per-dim
                 # strides when one iter-var dominates multiple source dims.

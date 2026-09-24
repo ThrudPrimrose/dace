@@ -187,3 +187,17 @@ def test_linearized_multi_var_index_is_refused_not_broadcast():
     got = np.zeros(n * n)
     sdfg.compile()(flat=got, aa=aa, bb=bb, N=n)
     assert np.allclose(got.reshape(n, n), aa + bb, rtol=1e-12, atol=1e-12)
+
+
+@dace.program
+def offset_read_from_array(a: dace.float64[2 * N], off: dace.int64[1], c: dace.float64[N]):
+    for i in dace.map[0:N]:
+        c[i] = a[off[0] + i]
+
+
+def test_index_offset_read_from_an_array_loads_consecutive_elements():
+    sdfg, refusals = canonicalized_and_vectorized(offset_read_from_array)
+    assert not refusals, refusals
+    a, c = np.arange(48.0), np.zeros(24)
+    sdfg.compile()(a=a, off=np.array([3]), c=c, N=24)
+    assert np.array_equal(c, a[3:27])
